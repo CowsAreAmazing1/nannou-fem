@@ -1,5 +1,7 @@
 use nannou::prelude::*;
-use triangulate::{ListFormat, Polygon, PolygonList, Vertex, formats};
+use spade::{
+    DelaunayTriangulation, HasPosition, Point2, Triangulation, handles::FixedVertexHandle,
+};
 
 fn main() {
     nannou::app(model)
@@ -8,10 +10,27 @@ fn main() {
         .run();
 }
 
+struct Vertex {
+    pos: Vec2,
+}
+
+impl From<Vec2> for Vertex {
+    fn from(pos: Vec2) -> Self {
+        Self { pos }
+    }
+}
+
+impl HasPosition for Vertex {
+    type Scalar = f32;
+
+    fn position(&self) -> Point2<Self::Scalar> {
+        spade::Point2::new(self.pos.x, self.pos.y)
+    }
+}
+
 struct Model {
-    verts: Vec<Vec2>,
-    triangulated_indices: Option<Vec<[usize; 2]>>,
-    polygons: Option<Vec<Vec<[f32; 2]>>>,
+    triangulation: DelaunayTriangulation<Vertex>,
+    handle: Option<FixedVertexHandle>,
 }
 
 fn model(app: &App) -> Model {
@@ -19,63 +38,52 @@ fn model(app: &App) -> Model {
     let rect = app.window(win).unwrap().rect();
     let (_, _, w, h) = rect.x_y_w_h();
 
-    let verts = (0..10)
+    let verts = (0..100)
         .map(|_| vec2(random_range(-w, w), random_range(-h, h)))
         .collect::<Vec<_>>();
 
+    let mut triangulation: DelaunayTriangulation<_> = DelaunayTriangulation::new();
+
+    verts.iter().for_each(|&vert| {
+        triangulation.insert(Vertex::from(vert)).unwrap();
+    });
+
     Model {
-        verts,
-        triangulated_indices: None,
-        polygons: None,
+        triangulation,
+        handle: None,
     }
 }
 
-fn update(_app: &App, model: &mut Model, _update: Update) {
-    let mut triangulated_indices = Vec::<[usize; 2]>::new();
+fn update(app: &App, model: &mut Model, _update: Update) {
+    if let Some(handle) = model.handle {
+        model.triangulation.remove(handle);
+    }
 
-    let polygons: Vec<_> = model.verts.iter().map(|&v| [v.x, v.y]).collect();
+    let new_handle = model
+        .triangulation
+        .insert(app.mouse.position().into())
+        .unwrap();
 
-    polygons.triangulate(formats::DeindexedListFormat::new(triangulated_indices));
-
-    // polygons
-    //     .triangulate(formats::IndexedListFormat::new(&mut triangulated_indices).into_fan_format())
-    //     .expect("Triangulation failed");
-    // println!(
-    //     "First triangle: {:?}, {:?}, {:?}",
-    //     polygons.get_vertex(triangulated_indices[0]),
-    //     polygons.get_vertex(triangulated_indices[1]),
-    //     polygons.get_vertex(triangulated_indices[2])
-    // );
-    // println!("{:?}", polygons);
-    // println!("{:?}", polygons);
+    model.handle = Some(new_handle);
 }
 
 fn view(app: &App, model: &Model, frame: Frame) {
-    let draw = app.draw().translate(vec3(-150.0, -150.0, 0.0));
+    let draw = app.draw();
 
     draw.background().color(WHITE);
 
-    model.verts.iter().for_each(|v| {
-        draw.ellipse()
-            .x_y(300.0 * v.x, 300.0 * v.y)
-            .w_h(10.0, 10.0)
-            .color(SLATEBLUE);
+    model.triangulation.vertices().for_each(|v| {
+        draw.ellipse().xy(v.data().pos).color(BLUE).w_h(15.0, 15.0);
     });
 
-    // draw.polygon()
-    //     .points(model.triangulated_indices.chunks(3).map(|triangle| {
-    //         triangle.iter().map(|&idx| {
-    //             let vertex = model.polygons.get_vertex(idx);
-    //             pt2(300.0 * vertex.x(), 300.0 * vertex.y())
-    //         })
-    //     }))
-    //     .color(STEELBLUE);
+    for face in model.triangulation.inner_faces() {
+        for edge in face.adjacent_edges() {
+            let v1 = edge.from().data().pos;
+            let v2 = edge.to().data().pos;
 
-    model.triangulated_indices.chunks(3).for_each(|chk| {
-        let points = chk.iter().map(|&idx| *model.polygons.get_vertex(idx));
-        let points = points.map(|v| pt2(300.0 * v.x(), 300.0 * v.y()));
-        draw.polyline().points(points);
-    });
+            draw.line().start(v1).end(v2).color(BLACK).weight(2.0);
+        }
+    }
 
     draw.to_frame(app, &frame).unwrap();
 }
