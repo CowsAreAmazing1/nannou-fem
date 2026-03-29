@@ -59,11 +59,27 @@ fn model(app: &App) -> Model {
     let half_h = h * 0.5;
 
     let radius = 500.0;
-    let num = 500;
+    let num = 1000;
+    // let to_constrain = (0..num)
+    //     .map(|i| {
+    //         let angle = map_range(i, 0, num, 0.0, TAU);
+    //         vec2(radius * angle.cos(), radius * angle.sin())
+    //     })
+    //     .collect::<Vec<_>>();
+    // let to_constrain = (0..num)
+    //     .map(|i| {
+    //         let angle = map_range(i, 0, num, 0.0, TAU);
+    //         let rad = radius * (1.0 + 0.25 * (5.0 * angle).sin());
+    //         vec2(rad * angle.cos(), rad * angle.sin())
+    //     })
+    //     .collect::<Vec<_>>();
     let to_constrain = (0..num)
         .map(|i| {
-            let angle = map_range(i, 0, num, 0.0, TAU);
-            vec2(radius * angle.cos(), radius * angle.sin())
+            let angle = map_range(i, 0, num, 0.0, 10.0 * TAU);
+            vec2(
+                radius * angle * 0.1 * angle.cos(),
+                radius * angle * 0.1 * angle.sin(),
+            )
         })
         .collect::<Vec<_>>();
 
