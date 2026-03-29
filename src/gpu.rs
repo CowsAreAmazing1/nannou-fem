@@ -4,28 +4,20 @@ use spade::{DelaunayTriangulation, HasPosition, Triangulation};
 pub struct GpuState {
     pub render_pipeline: wgpu::RenderPipeline,
     // uniform_buffer: wgpu::Buffer,
-    vertex_buffer: wgpu::Buffer,
-    tri_buffer: wgpu::Buffer,
-    values_buffer: wgpu::Buffer,
+    pub vertex_buffer: wgpu::Buffer,
+    pub tri_buffer: wgpu::Buffer,
+    pub values_buffer: wgpu::Buffer,
     pub bind_group: wgpu::BindGroup,
 }
 
 impl GpuState {
-    pub fn new<V>(
-        device: &wgpu::Device,
+    pub fn prepare_buffers<V>(
         triangulation: &DelaunayTriangulation<V>,
         half_extents: [f32; 2],
-    ) -> Self
+    ) -> (Vec<[f32; 2]>, Vec<u32>, Vec<f32>)
     where
         V: HasPosition<Scalar = f32>,
     {
-        // let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        //     label: Some("Uniform Buffer"),
-        //     size: std::mem::size_of::<Uniforms>() as u64,
-        //     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        //     mapped_at_creation: false,
-        // });
-
         let inv_w = if half_extents[0].abs() > f32::EPSILON {
             1.0 / half_extents[0]
         } else {
@@ -51,15 +43,46 @@ impl GpuState {
         let tris = triangulation
             .inner_faces()
             .flat_map(|f_hand| {
-                f_hand
-                    .vertices()
-                    .map(|v_hand| u32::try_from(v_hand.index()).expect("vertex index must fit into u32"))
+                f_hand.vertices().map(|v_hand| {
+                    u32::try_from(v_hand.index()).expect("vertex index must fit into u32")
+                })
             })
             .collect::<Vec<u32>>();
 
+        // let num = vertices.len() as f32;
+        // let values = (0..vertices.len())
+        //     .map(|i| i as f32 / num)
+        //     .collect::<Vec<_>>();
+        // let values = vertices
+        //     .iter()
+        //     .map(|&[x, y]| {
+        //         let dist = (x * x + y * y).sqrt();
+        //         1.0 - dist.clamp(0.0, 1.0)
+        //     })
+        //     .collect::<Vec<_>>();
         let values = (0..vertices.len())
             .map(|_| random_f32())
             .collect::<Vec<_>>();
+
+        (vertices, tris, values)
+    }
+
+    pub fn new<V>(
+        device: &wgpu::Device,
+        triangulation: &DelaunayTriangulation<V>,
+        half_extents: [f32; 2],
+    ) -> Self
+    where
+        V: HasPosition<Scalar = f32>,
+    {
+        // let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        //     label: Some("Uniform Buffer"),
+        //     size: std::mem::size_of::<Uniforms>() as u64,
+        //     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        //     mapped_at_creation: false,
+        // });
+
+        let (vertices, tris, values) = GpuState::prepare_buffers(triangulation, half_extents);
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Pendulum States Storage Buffer"),

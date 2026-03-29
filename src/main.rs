@@ -33,17 +33,24 @@ impl HasPosition for Vertex {
 
 struct Model {
     triangulation: DelaunayTriangulation<Vertex>,
-    handle: Option<FixedVertexHandle>,
+    handle: FixedVertexHandle,
     gpu: GpuState,
 }
 
 fn model(app: &App) -> Model {
-    let win = app.new_window().view(view).maximized(true).build().unwrap();
+    let win = app
+        .new_window()
+        .view(view)
+        .maximized(false)
+        .build()
+        .unwrap();
     let rect = app.window(win).unwrap().rect();
     let (_, _, w, h) = rect.x_y_w_h();
+    let half_w = w * 0.5;
+    let half_h = h * 0.5;
 
-    let verts = (0..100)
-        .map(|_| vec2(random_range(-w, w), random_range(-h, h)))
+    let verts = (0..1_000_000)
+        .map(|_| vec2(random_range(-half_w, half_w), random_range(-half_h, half_h)))
         .collect::<Vec<_>>();
 
     let mut triangulation: DelaunayTriangulation<_> = DelaunayTriangulation::new();
@@ -52,26 +59,41 @@ fn model(app: &App) -> Model {
         triangulation.insert(Vertex::from(vert)).unwrap();
     });
 
-    let gpu = GpuState::new(app.main_window().device(), &triangulation, [w, h]);
+    let handle = triangulation.insert(Vertex::from(Vec2::ZERO)).unwrap();
+
+    let gpu = GpuState::new(app.main_window().device(), &triangulation, [half_w, half_h]);
+
+    println!("faces: {:?}", &triangulation.inner_faces().count());
 
     Model {
         triangulation,
-        handle: None,
+        handle,
         gpu,
     }
 }
 
 fn update(app: &App, model: &mut Model, _update: Update) {
-    if let Some(handle) = model.handle {
-        model.triangulation.remove(handle);
-    }
+    model.triangulation.remove(model.handle);
 
     let new_handle = model
         .triangulation
         .insert(app.mouse.position().into())
         .unwrap();
 
-    model.handle = Some(new_handle);
+    model.handle = new_handle;
+
+    let window = app.main_window();
+    let queue = window.queue();
+    let (_, _, w, h) = window.rect().x_y_w_h();
+    let half_w = w * 0.5;
+    let half_h = h * 0.5;
+
+    let (vertices, tris, values) =
+        GpuState::prepare_buffers(&model.triangulation, [half_w, half_h]);
+
+    queue.write_buffer(&model.gpu.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
+    queue.write_buffer(&model.gpu.tri_buffer, 0, bytemuck::cast_slice(&tris));
+    queue.write_buffer(&model.gpu.values_buffer, 0, bytemuck::cast_slice(&values));
 }
 
 fn view(app: &App, model: &Model, frame: Frame) {
@@ -101,7 +123,6 @@ fn view(app: &App, model: &Model, frame: Frame) {
         render_pass.set_pipeline(&model.gpu.render_pipeline);
         render_pass.set_bind_group(0, &model.gpu.bind_group, &[]);
         render_pass.draw(0..3, 0..model.triangulation.inner_faces().count() as u32);
-        println!("{:?}", model.triangulation.inner_faces().count());
     }
     queue.submit(Some(encoder.finish()));
 
