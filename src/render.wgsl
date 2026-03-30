@@ -13,11 +13,16 @@ struct VertexOutput {
 };
 
 fn color_map(t_in: f32) -> vec3<f32> {
+    let b1 = vec3<f32>(0.0, 0.0, 0.6);
+    let b2 = vec3<f32>(0.0, 0.9, 1.0);
+    let b3 = vec3<f32>(1.0, 0.9, 0.1);
+    let b4 = vec3<f32>(0.9, 0.1, 0.0);
+
     let t = clamp(t_in, 0.0, 1.0);
-    // blue -> cyan -> yellow -> red
-    let c1 = mix(vec3<f32>(0.0, 0.0, 0.6), vec3<f32>(0.0, 0.9, 1.0), smoothstep(0.0, 0.33, t));
-    let c2 = mix(c1, vec3<f32>(1.0, 0.9, 0.1), smoothstep(0.33, 0.66, t));
-    let c3 = mix(c2, vec3<f32>(0.9, 0.1, 0.0), smoothstep(0.66, 1.0, t));
+    // softer gradient: light blue -> cyan -> light yellow -> light red
+    let c1 = mix(b1, b2, smoothstep(0.0, 0.33, t));
+    let c2 = mix(c1, b3, smoothstep(0.33, 0.66, t));
+    let c3 = mix(c2, b4, smoothstep(0.66, 1.0, t));
     return c3;
 }
 

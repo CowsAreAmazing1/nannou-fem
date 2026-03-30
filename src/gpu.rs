@@ -126,10 +126,10 @@ impl GpuState {
         }
     }
 
-    pub fn prepare_buffers<V>(
+    pub fn prepare_geometry<V>(
         triangulation: &ConstrainedDelaunayTriangulation<V>,
         window_rect: Rect,
-    ) -> (Vec<[f32; 2]>, Vec<u32>, Vec<f32>)
+    ) -> (Vec<[f32; 2]>, Vec<u32>)
     where
         V: HasPosition<Scalar = f32>,
     {
@@ -172,18 +172,18 @@ impl GpuState {
         // let values = (0..vertices.len())
         //     .map(|i| i as f32 / num)
         //     .collect::<Vec<_>>();
-        let values = vertices
-            .iter()
-            .map(|&[x, y]| {
-                let dist = (x * x + y * y).sqrt();
-                1.0 - dist.clamp(0.0, 1.0)
-            })
-            .collect::<Vec<_>>();
+        // let values = vertices
+        //     .iter()
+        //     .map(|&[x, y]| {
+        //         let dist = (x * x + y * y).sqrt();
+        //         1.0 - dist.clamp(0.0, 1.0)
+        //     })
+        //     .collect::<Vec<_>>();
         // let values = (0..vertices.len())
         //     .map(|_| random_f32())
         //     .collect::<Vec<_>>();
 
-        (vertices, tris, values)
+        (vertices, tris)
     }
 
     pub fn new<V>(
@@ -191,6 +191,7 @@ impl GpuState {
         queue: &wgpu::Queue,
         triangulation: &ConstrainedDelaunayTriangulation<V>,
         window_rect: Rect,
+        values: Option<&Vec<f32>>,
     ) -> Self
     where
         V: HasPosition<Scalar = f32>,
@@ -202,7 +203,15 @@ impl GpuState {
         //     mapped_at_creation: false,
         // });
 
-        let (vertices, tris, values) = GpuState::prepare_buffers(triangulation, window_rect);
+        let (vertices, tris) = GpuState::prepare_geometry(triangulation, window_rect);
+
+        let values: Vec<f32> = match values {
+            Some(v) => (*v).clone(),
+            None => {
+                let num = vertices.len() as f32;
+                (0..vertices.len()).map(|i| i as f32 / num).collect()
+            }
+        };
 
         let vertex_capacity = vertices.len().max(1);
         let tri_capacity = tris.len().max(1);

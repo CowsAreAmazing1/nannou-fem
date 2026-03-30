@@ -1,8 +1,5 @@
 use nannou::prelude::*;
-use spade::{
-    ConstrainedDelaunayTriangulation, HasPosition, Point2, Triangulation,
-    handles::FixedVertexHandle,
-};
+use spade::{ConstrainedDelaunayTriangulation, HasPosition, Point2, Triangulation};
 
 use crate::gpu::GpuState;
 mod gpu;
@@ -47,50 +44,21 @@ impl HasPosition for Vertex {
 
 struct Model {
     triangulation: ConstrainedDelaunayTriangulation<Vertex>,
-    handle: FixedVertexHandle,
     gpu: GpuState,
+    values: Vec<f32>,
 }
 
-fn model(app: &App) -> Model {
-    let win = app.new_window().view(view).maximized(true).build().unwrap();
-    let rect = app.window(win).unwrap().rect();
-    let (_, _, w, h) = rect.x_y_w_h();
-    let half_w = w * 0.5;
-    let half_h = h * 0.5;
-
-    let radius = 500.0;
-    let num = 1000;
-    // let to_constrain = (0..num)
-    //     .map(|i| {
-    //         let angle = map_range(i, 0, num, 0.0, TAU);
-    //         vec2(radius * angle.cos(), radius * angle.sin())
-    //     })
-    //     .collect::<Vec<_>>();
-    // let to_constrain = (0..num)
-    //     .map(|i| {
-    //         let angle = map_range(i, 0, num, 0.0, TAU);
-    //         let rad = radius * (1.0 + 0.25 * (5.0 * angle).sin());
-    //         vec2(rad * angle.cos(), rad * angle.sin())
-    //     })
-    //     .collect::<Vec<_>>();
-    let to_constrain = (0..num)
-        .map(|i| {
-            let angle = map_range(i, 0, num, 0.0, 10.0 * TAU);
-            vec2(
-                radius * angle * 0.1 * angle.cos(),
-                radius * angle * 0.1 * angle.sin(),
-            )
-        })
-        .collect::<Vec<_>>();
-
-    // let verts = (0..10)
-    //     .map(|_| vec2(random_range(-half_w, half_w), random_range(-half_h, half_h)))
-    //     .collect::<Vec<_>>();
+/// Sets up a constrained Delaunay triangulation, with the given vertices constrained in a closed loop, refines, and returns the triangulation.
+fn setup_triangulation(
+    to_constrain: &[Vec2],
+    half_width: f32,
+    half_height: f32,
+) -> ConstrainedDelaunayTriangulation<Vertex> {
     let verts = [
-        vec2(-half_w, -half_h),
-        vec2(half_w, -half_h),
-        vec2(half_w, half_h),
-        vec2(-half_w, half_h),
+        vec2(-half_width, -half_height),
+        vec2(half_width, -half_height),
+        vec2(half_width, half_height),
+        vec2(-half_width, half_height),
     ];
 
     let mut triangulation: ConstrainedDelaunayTriangulation<Vertex> =
@@ -104,49 +72,165 @@ fn model(app: &App) -> Model {
         }
     });
 
+    if let (Some(first), Some(last)) = (to_constrain.first(), to_constrain.last()) {
+        triangulation
+            .add_constraint_edge(Vertex::from(*last), Vertex::from(*first))
+            .unwrap();
+    }
+
     verts.iter().for_each(|&vert| {
         triangulation.insert(Vertex::from(vert)).unwrap();
     });
 
     triangulation.refine(spade::RefinementParameters::default());
 
-    let handle = triangulation.insert(Vertex::from(Vec2::ZERO)).unwrap();
+    triangulation
+}
+
+fn point_on_segment(p: Vec2, a: Vec2, b: Vec2, eps: f32) -> bool {
+    let ab = b - a;
+    let ap = p - a;
+
+    let cross = ab.perp_dot(ap).abs();
+    if cross > eps {
+        return false;
+    }
+
+    let dot = ap.dot(ab);
+    if dot < -eps {
+        return false;
+    }
+
+    let ab_len_sq = ab.length_squared();
+    if dot > ab_len_sq + eps {
+        return false;
+    }
+
+    true
+}
+
+fn point_in_or_on_polygon(point: Vec2, polygon: &[Vec2]) -> bool {
+    if polygon.len() < 3 {
+        return false;
+    }
+
+    let max_extent = polygon.iter().map(|v| v.length()).fold(1.0_f32, f32::max);
+    let eps = 1.0e-4 * max_extent;
+
+    for i in 0..polygon.len() {
+        let a = polygon[i];
+        let b = polygon[(i + 1) % polygon.len()];
+        if point_on_segment(point, a, b, eps) {
+            return true;
+        }
+    }
+
+    // Ray cast to the right; toggles every time we cross an edge.
+    let mut inside = false;
+    for i in 0..polygon.len() {
+        let a = polygon[i];
+        let b = polygon[(i + 1) % polygon.len()];
+
+        let intersects = (a.y > point.y) != (b.y > point.y)
+            && point.x < (b.x - a.x) * (point.y - a.y) / ((b.y - a.y) + f32::EPSILON) + a.x;
+
+        if intersects {
+            inside = !inside;
+        }
+    }
+
+    inside
+}
+
+fn build_values(
+    triangulation: &ConstrainedDelaunayTriangulation<Vertex>,
+    constrained_loop: &[Vec2],
+) -> Vec<f32> {
+    triangulation
+        .vertices()
+        .map(|vert| {
+            if point_in_or_on_polygon(vert.data().pos, constrained_loop) {
+                1.0
+            } else {
+                0.0
+            }
+        })
+        .collect()
+}
+
+fn model(app: &App) -> Model {
+    let win = app.new_window().view(view).maximized(true).build().unwrap();
+    let rect = app.window(win).unwrap().rect();
+    let (_, _, w, h) = rect.x_y_w_h();
+    let half_w = w * 0.5;
+    let half_h = h * 0.5;
+
+    let radius = 500.0;
+    let num = 100;
+    let to_constrain = (0..num)
+        .map(|i| {
+            let angle = map_range(i, 0, num, 0.0, TAU);
+            vec2(radius * angle.cos(), radius * angle.sin())
+        })
+        .collect::<Vec<_>>();
+    // let to_constrain = (0..num)
+    //     .map(|i| {
+    //         let angle = map_range(i, 0, num, 0.0, TAU);
+    //         let rad = radius * (1.0 + 0.25 * (5.0 * angle).sin());
+    //         vec2(rad * angle.cos(), rad * angle.sin())
+    //     })
+    //     .collect::<Vec<_>>();
+
+    let triangulation = setup_triangulation(&to_constrain, half_w, half_h);
+    let values = build_values(&triangulation, &to_constrain);
 
     let binding = app.main_window();
     let device = binding.device();
     let queue = binding.queue();
-    let gpu = GpuState::new(device, queue, &triangulation, binding.rect());
+    let gpu = GpuState::new(device, queue, &triangulation, binding.rect(), Some(&values));
 
-    println!("faces: {:?}", &triangulation.inner_faces().count());
+    println!(
+        "Triangulation has {} vertices and {} faces",
+        triangulation.vertices().count(),
+        triangulation.inner_faces().count()
+    );
 
     Model {
         triangulation,
-        handle,
         gpu,
+        values,
     }
 }
 
 fn update(app: &App, model: &mut Model, _update: Update) {
-    model.triangulation.remove(model.handle);
-
-    let new_handle = model
-        .triangulation
-        .insert(app.mouse.position().into())
-        .unwrap();
-
-    model.handle = new_handle;
+    let window = app.main_window();
+    let device = window.device();
+    let queue = window.queue();
+    let rect = window.rect();
 
     // model
     //     .triangulation
     //     .refine(spade::RefinementParameters::default());
 
-    let window = app.main_window();
-    let device = window.device();
-    let queue = window.queue();
+    // let (_, _, w, h) = rect.x_y_w_h();
+    // let half_w = w * 0.5;
+    // let half_h = h * 0.5;
 
-    let (vertices, tris, _values) = GpuState::prepare_buffers(&model.triangulation, window.rect());
+    // let radius = 500.0;
+    // let num = 10 * app.elapsed_frames();
+    // let to_constrain = (0..num)
+    //     .map(|i| {
+    //         let angle = map_range(i, 0, num, 0.0, TAU);
+    //         vec2(radius * angle.cos(), radius * angle.sin())
+    //     })
+    //     .collect::<Vec<_>>();
 
-    model.gpu.upload_mesh(device, queue, &vertices, &tris, None);
+    // model.triangulation = setup_triangulation(to_constrain, half_w, half_h);
+
+    let (vertices, tris) = GpuState::prepare_geometry(&model.triangulation, rect);
+    model
+        .gpu
+        .upload_mesh(device, queue, &vertices, &tris, Some(&model.values));
 }
 
 fn view(app: &App, model: &Model, frame: Frame) {
