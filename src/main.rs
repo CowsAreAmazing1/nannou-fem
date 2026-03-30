@@ -1,7 +1,11 @@
 use nannou::prelude::*;
 use spade::{ConstrainedDelaunayTriangulation, HasPosition, Point2, Triangulation};
 
+use crate::fem::{
+    apply_dirichlet_boundary, assemble_poisson_system, build_mesh, conjugate_gradient_solve,
+};
 use crate::gpu::GpuState;
+mod fem;
 mod gpu;
 
 // use crate::svg::read_svg;
@@ -82,80 +86,36 @@ fn setup_triangulation(
         triangulation.insert(Vertex::from(vert)).unwrap();
     });
 
-    triangulation.refine(spade::RefinementParameters::default());
+    // triangulation.refine(spade::RefinementParameters::default());
+    triangulation.refine(
+        spade::RefinementParameters::default()
+            .with_max_additional_vertices(10)
+            .with_angle_limit(spade::AngleLimit::from_deg(30.0)),
+    );
 
     triangulation
 }
 
-fn point_on_segment(p: Vec2, a: Vec2, b: Vec2, eps: f32) -> bool {
-    let ab = b - a;
-    let ap = p - a;
-
-    let cross = ab.perp_dot(ap).abs();
-    if cross > eps {
-        return false;
+fn normalize_to_unit_interval(values: &[f32]) -> Vec<f32> {
+    if values.is_empty() {
+        return Vec::new();
     }
 
-    let dot = ap.dot(ab);
-    if dot < -eps {
-        return false;
+    let (min_val, max_val) = values
+        .iter()
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(mn, mx), &v| {
+            (mn.min(v), mx.max(v))
+        });
+
+    let span = max_val - min_val;
+    if span.abs() <= 1.0e-12 {
+        return vec![0.0; values.len()];
     }
 
-    let ab_len_sq = ab.length_squared();
-    if dot > ab_len_sq + eps {
-        return false;
-    }
-
-    true
-}
-
-fn point_in_or_on_polygon(point: Vec2, polygon: &[Vec2]) -> bool {
-    if polygon.len() < 3 {
-        return false;
-    }
-
-    let max_extent = polygon.iter().map(|v| v.length()).fold(1.0_f32, f32::max);
-    let eps = 1.0e-4 * max_extent;
-
-    for i in 0..polygon.len() {
-        let a = polygon[i];
-        let b = polygon[(i + 1) % polygon.len()];
-        if point_on_segment(point, a, b, eps) {
-            return true;
-        }
-    }
-
-    // Ray cast to the right; toggles every time we cross an edge.
-    let mut inside = false;
-    for i in 0..polygon.len() {
-        let a = polygon[i];
-        let b = polygon[(i + 1) % polygon.len()];
-
-        let intersects = (a.y > point.y) != (b.y > point.y)
-            && point.x < (b.x - a.x) * (point.y - a.y) / ((b.y - a.y) + f32::EPSILON) + a.x;
-
-        if intersects {
-            inside = !inside;
-        }
-    }
-
-    inside
-}
-
-fn build_values(
-    triangulation: &ConstrainedDelaunayTriangulation<Vertex>,
-    constrained_loop: &[Vec2],
-) -> Vec<f32> {
-    triangulation
-        .vertices()
-        .map(|vert| {
-            if point_in_or_on_polygon(vert.data().pos, constrained_loop) {
-                1.0
-            } else {
-                0.0
-            }
-        })
-        .collect()
+    values
+        .iter()
+        .map(|&v| ((v - min_val) / span).clamp(0.0, 1.0))
+        .collect::<Vec<_>>()
 }
 
 fn model(app: &App) -> Model {
@@ -166,23 +126,36 @@ fn model(app: &App) -> Model {
     let half_h = h * 0.5;
 
     let radius = 500.0;
-    let num = 100;
-    let to_constrain = (0..num)
-        .map(|i| {
-            let angle = map_range(i, 0, num, 0.0, TAU);
-            vec2(radius * angle.cos(), radius * angle.sin())
-        })
-        .collect::<Vec<_>>();
+    let num = 10;
     // let to_constrain = (0..num)
     //     .map(|i| {
     //         let angle = map_range(i, 0, num, 0.0, TAU);
-    //         let rad = radius * (1.0 + 0.25 * (5.0 * angle).sin());
-    //         vec2(rad * angle.cos(), rad * angle.sin())
+    //         vec2(radius * angle.cos(), radius * angle.sin())
     //     })
     //     .collect::<Vec<_>>();
+    let to_constrain = (0..num)
+        .map(|i| {
+            let angle = map_range(i, 0, num, 0.0, TAU);
+            let rad = radius * (1.0 + 0.25 * (5.0 * angle).sin());
+            vec2(rad * angle.cos(), rad * angle.sin())
+        })
+        .collect::<Vec<_>>();
 
     let triangulation = setup_triangulation(&to_constrain, half_w, half_h);
-    let values = build_values(&triangulation, &to_constrain);
+    let fem_mesh = build_mesh(&triangulation, &to_constrain);
+
+    let source_radius = radius * 0.18;
+    let source_strength = 1.0;
+    let mut poisson = assemble_poisson_system(&fem_mesh, |p| {
+        if p.length_squared() <= source_radius * source_radius {
+            source_strength
+        } else {
+            0.0
+        }
+    });
+    apply_dirichlet_boundary(&mut poisson, &fem_mesh, |_i, _pos| 0.0);
+    let solve = conjugate_gradient_solve(&poisson, 1.0e-4, 5_000);
+    let values = normalize_to_unit_interval(&solve.solution);
 
     let binding = app.main_window();
     let device = binding.device();
@@ -193,6 +166,22 @@ fn model(app: &App) -> Model {
         "Triangulation has {} vertices and {} faces",
         triangulation.vertices().count(),
         triangulation.inner_faces().count()
+    );
+    println!(
+        "FEM step 1: extracted {} nodes, {} elements, {} boundary nodes",
+        fem_mesh.positions.len(),
+        fem_mesh.elements.len(),
+        fem_mesh.is_boundary.iter().filter(|&&b| b).count()
+    );
+    println!(
+        "FEM step 2: assembled Poisson system with {} nodes, {} non-zeros, rhs size {}",
+        poisson.node_count(),
+        poisson.nnz(),
+        poisson.rhs.len()
+    );
+    println!(
+        "FEM step 3: CG converged={}, iterations={}, residual_l2={:.3e}",
+        solve.converged, solve.iterations, solve.residual_l2
     );
 
     Model {
@@ -207,6 +196,52 @@ fn update(app: &App, model: &mut Model, _update: Update) {
     let device = window.device();
     let queue = window.queue();
     let rect = window.rect();
+    let (_, _, w, h) = rect.x_y_w_h();
+    let half_w = w * 0.5;
+    let half_h = h * 0.5;
+
+    {
+        let radius = 500.0;
+        let num = app.elapsed_frames();
+        let to_constrain = (0..num)
+            .map(|i| {
+                let angle = map_range(i, 0, num, 0.0, TAU);
+                let rad = radius * (1.0 + 0.25 * (5.0 * angle).sin());
+                vec2(rad * angle.cos(), rad * angle.sin())
+            })
+            .collect::<Vec<_>>();
+
+        model.triangulation = setup_triangulation(&to_constrain, half_w, half_h);
+
+        model.triangulation.refine(
+            spade::RefinementParameters::default()
+                .with_max_additional_vertices(50 * app.elapsed_frames() as usize)
+                .with_max_allowed_area(100.0)
+                .with_angle_limit(spade::AngleLimit::from_deg(30.0)),
+        );
+
+        let fem_mesh = build_mesh(&model.triangulation, &to_constrain);
+
+        let source_radius = radius * 0.18;
+        let source_strength = 1.0;
+        let mut poisson = assemble_poisson_system(&fem_mesh, |p| {
+            if p.length_squared() <= source_radius * source_radius {
+                source_strength
+            } else {
+                0.0
+            }
+        });
+        apply_dirichlet_boundary(&mut poisson, &fem_mesh, |_i, _pos| 0.0);
+        let solve = conjugate_gradient_solve(&poisson, 1.0e-4, 5_000);
+        let values = normalize_to_unit_interval(&solve.solution);
+
+        let device = window.device();
+        let queue = window.queue();
+        let (vertices, tris) = GpuState::prepare_geometry(&model.triangulation, rect);
+        model
+            .gpu
+            .upload_mesh(device, queue, &vertices, &tris, Some(&values));
+    }
 
     // model
     //     .triangulation
@@ -263,20 +298,20 @@ fn view(app: &App, model: &Model, frame: Frame) {
     }
     queue.submit(Some(encoder.finish()));
 
-    let draw = app.draw();
+    // let draw = app.draw();
 
-    // model.triangulation.vertices().for_each(|v| {
-    //     draw.ellipse().xy(v.data().pos).color(BLUE).w_h(15.0, 15.0);
-    // });
+    // // model.triangulation.vertices().for_each(|v| {
+    // //     draw.ellipse().xy(v.data().pos).color(BLUE).w_h(15.0, 15.0);
+    // // });
 
-    for face in model.triangulation.inner_faces() {
-        for edge in face.adjacent_edges() {
-            let v1 = edge.from().data().pos;
-            let v2 = edge.to().data().pos;
+    // for face in model.triangulation.inner_faces() {
+    //     for edge in face.adjacent_edges() {
+    //         let v1 = edge.from().data().pos;
+    //         let v2 = edge.to().data().pos;
 
-            draw.line().start(v1).end(v2).color(BLACK).weight(2.0);
-        }
-    }
+    //         draw.line().start(v1).end(v2).color(BLACK).weight(2.0);
+    //     }
+    // }
 
-    draw.to_frame(app, &frame).unwrap();
+    // draw.to_frame(app, &frame).unwrap();
 }
