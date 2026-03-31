@@ -210,6 +210,15 @@ pub fn point_in_or_on_polygon(point: Vec2, polygon: &[Vec2]) -> bool {
     inside
 }
 
+pub fn point_in_any_polygon(point: Vec2, polygons: &[Vec<Vec2>]) -> bool {
+    for polygon in polygons {
+        if point_in_or_on_polygon(point, polygon) {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn build_binary_domain_values<V>(
     triangulation: &ConstrainedDelaunayTriangulation<V>,
     constrained_loop: &[Vec2],
@@ -232,7 +241,7 @@ where
 
 pub fn build_mesh<V>(
     triangulation: &ConstrainedDelaunayTriangulation<V>,
-    constrained_loop: &[Vec2],
+    constrained_loops: &[Vec<Vec2>],
 ) -> FemMesh
 where
     V: HasPosition<Scalar = f32>,
@@ -256,23 +265,31 @@ where
     let is_boundary = positions
         .iter()
         .map(|&p| {
-            if constrained_loop.len() < 2 {
+            if constrained_loops.is_empty() {
                 return false;
             }
 
-            let max_extent = constrained_loop
+            let max_extent = constrained_loops
                 .iter()
+                .flat_map(|loop_pts| loop_pts.iter())
                 .map(|v| v.length())
                 .fold(1.0_f32, f32::max);
             let eps = 1.0e-4 * max_extent;
 
-            for i in 0..constrained_loop.len() {
-                let a = constrained_loop[i];
-                let b = constrained_loop[(i + 1) % constrained_loop.len()];
-                if point_on_segment(p, a, b, eps) {
-                    return true;
+            for loop_pts in constrained_loops {
+                if loop_pts.len() < 2 {
+                    continue;
+                }
+
+                for i in 0..loop_pts.len() {
+                    let a = loop_pts[i];
+                    let b = loop_pts[(i + 1) % loop_pts.len()];
+                    if point_on_segment(p, a, b, eps) {
+                        return true;
+                    }
                 }
             }
+
             false
         })
         .collect::<Vec<_>>();
