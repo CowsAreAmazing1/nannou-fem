@@ -1,8 +1,11 @@
 use nannou::prelude::*;
+use nannou_egui::Egui;
 use spade::{ConstrainedDelaunayTriangulation, HasPosition, Point2, Triangulation};
 
+use crate::egui::UiState;
 use crate::fem::{build_mesh, point_in_any_polygon};
 use crate::gpu::GpuState;
+mod egui;
 mod fem;
 mod gpu;
 
@@ -18,6 +21,7 @@ fn main() {
         .run();
 }
 
+/// Allowing Nannoy Vec2s to be used as vertices in a triangulation
 struct Vertex {
     pos: Vec2,
 }
@@ -44,18 +48,46 @@ impl HasPosition for Vertex {
     }
 }
 
+struct Params {
+    max_additional_vertices: usize,
+    max_allowed_area: f32,
+    angle_limit: f64,
+
+    draw_triangulation: bool,
+    shape_parameters: [f32; 4], // [outer radius, inner radius, omega, spacing]
+
+    refinement_success: Option<bool>,
+    num_vertices: Option<usize>,
+}
+
+impl Default for Params {
+    fn default() -> Self {
+        Self {
+            max_additional_vertices: 10_000,
+            max_allowed_area: 10_000.0,
+            angle_limit: 30.0,
+            draw_triangulation: false,
+            shape_parameters: [200.0, 0.5, 4.0, 300.0],
+            refinement_success: None,
+            num_vertices: None,
+        }
+    }
+}
+
 struct Model {
     triangulation: ConstrainedDelaunayTriangulation<Vertex>,
     gpu: GpuState,
+    ui: UiState,
+    params: Params,
 }
 
-/// Sets up a constrained Delaunay triangulation, with the given vertices constrained in a closed loop, refines, and returns the triangulation.
+/// Sets up a constrained Delaunay triangulation, with the given vertices constrained in a closed loop, refines, and returns the triangulation. Returns the triangulation, and a boolean indicating whether the refinement finished without running out of vertices.
 fn setup_triangulation(
     to_constrain: &[Vec<Vec2>],
     half_width: f32,
     half_height: f32,
     refinement_params: Option<spade::RefinementParameters<f32>>,
-) -> ConstrainedDelaunayTriangulation<Vertex> {
+) -> (ConstrainedDelaunayTriangulation<Vertex>, bool) {
     let verts = [
         vec2(-half_width, -half_height),
         vec2(half_width, -half_height),
@@ -86,18 +118,24 @@ fn setup_triangulation(
         }
     }
 
-    if let Some(params) = refinement_params {
-        triangulation.refine(params);
+    let result = if let Some(params) = refinement_params {
+        triangulation.refine(params)
     } else {
         triangulation
-            .refine(spade::RefinementParameters::default().with_max_additional_vertices(10_000));
+            .refine(spade::RefinementParameters::default().with_max_additional_vertices(10_000))
     };
 
-    triangulation
+    (triangulation, result.refinement_complete)
 }
 
 fn model(app: &App) -> Model {
-    let win = app.new_window().view(view).maximized(true).build().unwrap();
+    let win = app
+        .new_window()
+        .raw_event(raw_ui_event)
+        .view(view)
+        .maximized(true)
+        .build()
+        .unwrap();
     let rect = app.window(win).unwrap().rect();
     let (_, _, w, h) = rect.x_y_w_h();
     let half_w = w * 0.5;
@@ -121,11 +159,7 @@ fn model(app: &App) -> Model {
         .collect::<Vec<_>>();
     let constrained_loops = vec![left_loop, right_loop];
 
-    let params = spade::RefinementParameters::default().with_max_additional_vertices(10_000);
-    // .with_max_allowed_area(100.0)
-    // .with_angle_limit(spade::AngleLimit::from_deg(30.0)),
-
-    let triangulation = setup_triangulation(&constrained_loops, half_w, half_h, Some(params));
+    let (triangulation, _) = setup_triangulation(&constrained_loops, half_w, half_h, None);
 
     let fem_mesh = build_mesh(&triangulation, &constrained_loops);
 
@@ -141,10 +175,10 @@ fn model(app: &App) -> Model {
         })
         .collect::<Vec<_>>();
 
-    let binding = app.main_window();
-    let device = binding.device();
-    let queue = binding.queue();
-    let gpu = GpuState::new(device, queue, &triangulation, binding.rect(), Some(&values));
+    let window = app.main_window();
+    let device = window.device();
+    let queue = window.queue();
+    let gpu = GpuState::new(device, queue, &triangulation, window.rect(), Some(&values));
 
     println!(
         "Triangulation has {} vertices and {} faces",
@@ -168,10 +202,22 @@ fn model(app: &App) -> Model {
     //     solve.converged, solve.iterations, solve.residual_l2
     // );
 
-    Model { triangulation, gpu }
+    let egui = Egui::from_window(&window);
+    let ui = UiState::new(egui);
+
+    let params = Params::default();
+
+    Model {
+        triangulation,
+        gpu,
+        ui,
+        params,
+    }
 }
 
 fn update(app: &App, model: &mut Model, _update: Update) {
+    model.ui.update(&mut model.params);
+
     let window = app.main_window();
     let rect = window.rect();
     let device = window.device();
@@ -181,29 +227,37 @@ fn update(app: &App, model: &mut Model, _update: Update) {
     let half_w = w * 0.5;
     let half_h = h * 0.5;
 
-    let radius = 200.0;
     let num = 100;
+    let radius_outer = model.params.shape_parameters[0];
+    let radius_inner = model.params.shape_parameters[1];
+    let omega = model.params.shape_parameters[2];
+    let spacing = model.params.shape_parameters[3];
     let left_loop = (0..num)
         .map(|i| {
             let angle = map_range(i, 0, num, 0.0, TAU);
-            let rad = radius * (1.0 + 0.5 * (4.0 * angle + app.time).sin());
-            vec2(rad * angle.cos() - 300.0, rad * angle.sin())
+            let rad = radius_outer * (1.0 + radius_inner * (omega * angle + app.time).sin());
+            vec2(rad * angle.cos() - spacing, rad * angle.sin())
         })
         .collect::<Vec<_>>();
     let right_loop = (0..num)
         .map(|i| {
             let angle = map_range(i, 0, num, 0.0, TAU);
-            let rad = radius * (1.0 + 0.5 * (4.0 * angle + app.time).sin());
-            vec2(rad * angle.cos() + 300.0, rad * angle.sin())
+            let rad = radius_outer * (1.0 + radius_inner * (omega * angle + app.time).sin());
+            vec2(rad * angle.cos() + spacing, rad * angle.sin())
         })
         .collect::<Vec<_>>();
     let constrained_loops = vec![left_loop, right_loop];
 
-    let params = spade::RefinementParameters::default().with_max_additional_vertices(100_000);
-    // .with_max_allowed_area(100.0)
-    // .with_angle_limit(spade::AngleLimit::from_deg(30.0)),
+    let params = spade::RefinementParameters::default()
+        .with_max_additional_vertices(model.params.max_additional_vertices)
+        .with_max_allowed_area(model.params.max_allowed_area)
+        .with_angle_limit(spade::AngleLimit::from_deg(model.params.angle_limit));
 
-    model.triangulation = setup_triangulation(&constrained_loops, half_w, half_h, Some(params));
+    let (triangulation, refinement_success) =
+        setup_triangulation(&constrained_loops, half_w, half_h, Some(params));
+    model.triangulation = triangulation;
+    model.params.refinement_success = Some(refinement_success);
+    model.params.num_vertices = Some(model.triangulation.vertices().count());
 
     let fem_mesh = build_mesh(&model.triangulation, &constrained_loops);
     let values = fem_mesh
@@ -254,20 +308,28 @@ fn view(app: &App, model: &Model, frame: Frame) {
     }
     queue.submit(Some(encoder.finish()));
 
-    // let draw = app.draw();
+    if model.params.draw_triangulation {
+        let draw = app.draw();
 
-    // // model.triangulation.vertices().for_each(|v| {
-    // //     draw.ellipse().xy(v.data().pos).color(BLUE).w_h(15.0, 15.0);
-    // // });
+        // model.triangulation.vertices().for_each(|v| {
+        //     draw.ellipse().xy(v.data().pos).color(BLUE).w_h(15.0, 15.0);
+        // });
 
-    // for face in model.triangulation.inner_faces() {
-    //     for edge in face.adjacent_edges() {
-    //         let v1 = edge.from().data().pos;
-    //         let v2 = edge.to().data().pos;
+        for face in model.triangulation.inner_faces() {
+            for edge in face.adjacent_edges() {
+                let v1 = edge.from().data().pos;
+                let v2 = edge.to().data().pos;
 
-    //         draw.line().start(v1).end(v2).color(BLACK).weight(2.0);
-    //     }
-    // }
+                draw.line().start(v1).end(v2).color(BLACK).weight(2.0);
+            }
+        }
 
-    // draw.to_frame(app, &frame).unwrap();
+        draw.to_frame(app, &frame).unwrap();
+    }
+
+    model.ui.show(&frame);
+}
+
+fn raw_ui_event(_app: &App, model: &mut Model, event: &nannou::winit::event::WindowEvent) {
+    model.ui.handle_raw_event(event);
 }
