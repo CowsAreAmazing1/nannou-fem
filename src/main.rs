@@ -1,10 +1,7 @@
 use nannou::prelude::*;
 use spade::{ConstrainedDelaunayTriangulation, HasPosition, Point2, Triangulation};
 
-use crate::fem::{
-    apply_dirichlet_boundary, assemble_poisson_system, build_mesh, conjugate_gradient_solve,
-    point_in_any_polygon,
-};
+use crate::fem::{build_mesh, point_in_any_polygon};
 use crate::gpu::GpuState;
 mod fem;
 mod gpu;
@@ -50,7 +47,6 @@ impl HasPosition for Vertex {
 struct Model {
     triangulation: ConstrainedDelaunayTriangulation<Vertex>,
     gpu: GpuState,
-    values: Vec<f32>,
 }
 
 /// Sets up a constrained Delaunay triangulation, with the given vertices constrained in a closed loop, refines, and returns the triangulation.
@@ -58,6 +54,7 @@ fn setup_triangulation(
     to_constrain: &[Vec<Vec2>],
     half_width: f32,
     half_height: f32,
+    refinement_params: Option<spade::RefinementParameters<f32>>,
 ) -> ConstrainedDelaunayTriangulation<Vertex> {
     let verts = [
         vec2(-half_width, -half_height),
@@ -69,13 +66,14 @@ fn setup_triangulation(
     let mut triangulation: ConstrainedDelaunayTriangulation<Vertex> =
         ConstrainedDelaunayTriangulation::new();
 
-    to_constrain.iter().for_each(|polygon| {
-        polygon.windows(2).for_each(|window| {
+    for polygon in to_constrain {
+        for window in polygon.windows(2) {
             if let [vert1, vert2] = window {
-                let _ =
-                    triangulation.add_constraint_edge(Vertex::from(*vert1), Vertex::from(*vert2));
+                triangulation
+                    .add_constraint_edge(Vertex::from(*vert1), Vertex::from(*vert2))
+                    .unwrap();
             }
-        });
+        }
 
         if let (Some(first), Some(last)) = (polygon.first(), polygon.last()) {
             triangulation
@@ -83,41 +81,19 @@ fn setup_triangulation(
                 .unwrap();
         }
 
-        verts.iter().for_each(|&vert| {
+        for &vert in &verts {
             triangulation.insert(Vertex::from(vert)).unwrap();
-        });
-    });
+        }
+    }
 
-    // triangulation.refine(spade::RefinementParameters::default());
-    triangulation.refine(
-        spade::RefinementParameters::default()
-            .with_max_additional_vertices(10)
-            .with_angle_limit(spade::AngleLimit::from_deg(30.0)),
-    );
+    if let Some(params) = refinement_params {
+        triangulation.refine(params);
+    } else {
+        triangulation
+            .refine(spade::RefinementParameters::default().with_max_additional_vertices(10_000));
+    };
 
     triangulation
-}
-
-fn normalize_to_unit_interval(values: &[f32]) -> Vec<f32> {
-    if values.is_empty() {
-        return Vec::new();
-    }
-
-    let (min_val, max_val) = values
-        .iter()
-        .fold((f32::INFINITY, f32::NEG_INFINITY), |(mn, mx), &v| {
-            (mn.min(v), mx.max(v))
-        });
-
-    let span = max_val - min_val;
-    if span.abs() <= 1.0e-12 {
-        return vec![0.0; values.len()];
-    }
-
-    values
-        .iter()
-        .map(|&v| ((v - min_val) / span).clamp(0.0, 1.0))
-        .collect::<Vec<_>>()
 }
 
 fn model(app: &App) -> Model {
@@ -145,26 +121,25 @@ fn model(app: &App) -> Model {
         .collect::<Vec<_>>();
     let constrained_loops = vec![left_loop, right_loop];
 
-    let mut triangulation = setup_triangulation(&constrained_loops, half_w, half_h);
+    let params = spade::RefinementParameters::default().with_max_additional_vertices(10_000);
+    // .with_max_allowed_area(100.0)
+    // .with_angle_limit(spade::AngleLimit::from_deg(30.0)),
 
-    triangulation.refine(
-        spade::RefinementParameters::default().with_max_additional_vertices(100_000), // .with_max_allowed_area(100.0)
-                                                                                      // .with_angle_limit(spade::AngleLimit::from_deg(30.0)),
-    );
+    let triangulation = setup_triangulation(&constrained_loops, half_w, half_h, Some(params));
 
     let fem_mesh = build_mesh(&triangulation, &constrained_loops);
 
-    let source_strength = 1.0;
-    let mut poisson = assemble_poisson_system(&fem_mesh, |p| {
-        if point_in_any_polygon(p, &constrained_loops) {
-            source_strength
-        } else {
-            0.0
-        }
-    });
-    apply_dirichlet_boundary(&mut poisson, &fem_mesh, |_i, _pos| 0.0);
-    let solve = conjugate_gradient_solve(&poisson, 1.0e-6, 5_000);
-    let values = normalize_to_unit_interval(&solve.solution);
+    let values = fem_mesh
+        .positions
+        .iter()
+        .map(|&p| {
+            if point_in_any_polygon(p, &constrained_loops) {
+                1.0
+            } else {
+                0.0
+            }
+        })
+        .collect::<Vec<_>>();
 
     let binding = app.main_window();
     let device = binding.device();
@@ -182,22 +157,18 @@ fn model(app: &App) -> Model {
         fem_mesh.elements.len(),
         fem_mesh.is_boundary.iter().filter(|&&b| b).count()
     );
-    println!(
-        "FEM step 2: assembled Poisson system with {} nodes, {} non-zeros, rhs size {}",
-        poisson.node_count(),
-        poisson.nnz(),
-        poisson.rhs.len()
-    );
-    println!(
-        "FEM step 3: CG converged={}, iterations={}, residual_l2={:.3e}",
-        solve.converged, solve.iterations, solve.residual_l2
-    );
+    // println!(
+    //     "FEM step 2: assembled Poisson system with {} nodes, {} non-zeros, rhs size {}",
+    //     poisson.node_count(),
+    //     poisson.nnz(),
+    //     poisson.rhs.len()
+    // );
+    // println!(
+    //     "FEM step 3: CG converged={}, iterations={}, residual_l2={:.3e}",
+    //     solve.converged, solve.iterations, solve.residual_l2
+    // );
 
-    Model {
-        triangulation,
-        gpu,
-        values,
-    }
+    Model { triangulation, gpu }
 }
 
 fn update(app: &App, model: &mut Model, _update: Update) {
@@ -228,26 +199,24 @@ fn update(app: &App, model: &mut Model, _update: Update) {
         .collect::<Vec<_>>();
     let constrained_loops = vec![left_loop, right_loop];
 
-    model.triangulation = setup_triangulation(&constrained_loops, half_w, half_h);
+    let params = spade::RefinementParameters::default().with_max_additional_vertices(100_000);
+    // .with_max_allowed_area(100.0)
+    // .with_angle_limit(spade::AngleLimit::from_deg(30.0)),
 
-    model.triangulation.refine(
-        spade::RefinementParameters::default().with_max_additional_vertices(100_000), // .with_max_allowed_area(100.0)
-                                                                                      // .with_angle_limit(spade::AngleLimit::from_deg(30.0)),
-    );
+    model.triangulation = setup_triangulation(&constrained_loops, half_w, half_h, Some(params));
 
     let fem_mesh = build_mesh(&model.triangulation, &constrained_loops);
-
-    let source_strength = 1.0;
-    let mut poisson = assemble_poisson_system(&fem_mesh, |p| {
-        if point_in_any_polygon(p, &constrained_loops) {
-            source_strength
-        } else {
-            0.0
-        }
-    });
-    apply_dirichlet_boundary(&mut poisson, &fem_mesh, |_i, _pos| 0.0);
-    let solve = conjugate_gradient_solve(&poisson, 1.0e-5, 5_000);
-    let values = normalize_to_unit_interval(&solve.solution);
+    let values = fem_mesh
+        .positions
+        .iter()
+        .map(|&p| {
+            if point_in_any_polygon(p, &constrained_loops) {
+                1.0
+            } else {
+                0.0
+            }
+        })
+        .collect::<Vec<_>>();
 
     let (vertices, tris) = GpuState::prepare_geometry(&model.triangulation, rect);
     model
