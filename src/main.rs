@@ -21,7 +21,7 @@ fn main() {
         .run();
 }
 
-/// Allowing Nannoy Vec2s to be used as vertices in a triangulation
+/// Allowing Nannou Vec2s to be used as vertices in a triangulation
 struct Vertex {
     pos: Vec2,
 }
@@ -98,24 +98,14 @@ fn setup_triangulation(
     let mut triangulation: ConstrainedDelaunayTriangulation<Vertex> =
         ConstrainedDelaunayTriangulation::new();
 
+    for &vert in &verts {
+        triangulation.insert(Vertex::from(vert)).unwrap();
+    }
+
     for polygon in to_constrain {
-        for window in polygon.windows(2) {
-            if let [vert1, vert2] = window {
-                triangulation
-                    .add_constraint_edge(Vertex::from(*vert1), Vertex::from(*vert2))
-                    .unwrap();
-            }
-        }
-
-        if let (Some(first), Some(last)) = (polygon.first(), polygon.last()) {
-            triangulation
-                .add_constraint_edge(Vertex::from(*last), Vertex::from(*first))
-                .unwrap();
-        }
-
-        for &vert in &verts {
-            triangulation.insert(Vertex::from(vert)).unwrap();
-        }
+        triangulation
+            .add_constraint_edges(polygon.iter().copied().map(Vertex::from), true)
+            .unwrap();
     }
 
     let result = if let Some(params) = refinement_params {
@@ -131,6 +121,7 @@ fn setup_triangulation(
 fn model(app: &App) -> Model {
     let win = app
         .new_window()
+        .msaa_samples(1)
         .raw_event(raw_ui_event)
         .view(view)
         .maximized(true)
@@ -178,7 +169,7 @@ fn model(app: &App) -> Model {
     let window = app.main_window();
     let device = window.device();
     let queue = window.queue();
-    let gpu = GpuState::new(device, queue, &triangulation, window.rect(), Some(&values));
+    let gpu = GpuState::new(device, queue, &triangulation, window.rect(), Some(values));
 
     println!(
         "Triangulation has {} vertices and {} faces",

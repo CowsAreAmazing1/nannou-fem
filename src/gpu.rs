@@ -191,7 +191,7 @@ impl GpuState {
         queue: &wgpu::Queue,
         triangulation: &ConstrainedDelaunayTriangulation<V>,
         window_rect: Rect,
-        values: Option<&Vec<f32>>,
+        values: Option<Vec<f32>>,
     ) -> Self
     where
         V: HasPosition<Scalar = f32>,
@@ -205,13 +205,10 @@ impl GpuState {
 
         let (vertices, tris) = GpuState::prepare_geometry(triangulation, window_rect);
 
-        let values: Vec<f32> = match values {
-            Some(v) => (*v).clone(),
-            None => {
-                let num = vertices.len() as f32;
-                (0..vertices.len()).map(|i| i as f32 / num).collect()
-            }
-        };
+        let values = values.unwrap_or_else(|| {
+            let num = vertices.len() as f32;
+            (0..vertices.len()).map(|i| i as f32 / num).collect()
+        });
 
         let vertex_capacity = vertices.len().max(1);
         let tri_capacity = tris.len().max(1);
@@ -338,7 +335,7 @@ impl GpuState {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState {
-                count: 4,
+                count: 1,
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },

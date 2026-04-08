@@ -107,14 +107,13 @@ where
         .map(|v| v.length())
         .fold(1.0_f32, f32::max);
 
+    let eps = 1.0e-4 * max_extent;
     let is_boundary = positions
         .iter()
         .map(|&p| {
             if constrained_loops.is_empty() {
                 return false;
             }
-
-            let eps = 1.0e-4 * max_extent;
 
             for loop_pts in constrained_loops {
                 if loop_pts.len() < 2 {
