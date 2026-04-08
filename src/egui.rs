@@ -67,14 +67,23 @@ impl UiState {
         let ctx = self.ui.begin_frame();
         egui::Window::new("Controls").show(&ctx, |ui| {
             ui.add(
-                egui::Slider::new(&mut params.shape_parameters[0], 0.0..=400.0)
+                egui::Slider::new(&mut params.shape_parameters[0], 2.0..=10_000.0)
+                    .integer()
+                    .logarithmic(true)
+                    .text("Polygon Resolution"),
+            );
+            ui.add(
+                egui::Slider::new(&mut params.shape_parameters[1], 0.0..=400.0)
                     .text("Outer Radius"),
             );
             ui.add(
-                egui::Slider::new(&mut params.shape_parameters[1], 0.0..=1.0).text("Inner Radius"),
+                egui::Slider::new(&mut params.shape_parameters[2], 0.0..=1.0).text("Inner Radius"),
             );
-            ui.add(egui::Slider::new(&mut params.shape_parameters[2], 0.0..=10.0).text("Omega"));
-            ui.add(egui::Slider::new(&mut params.shape_parameters[3], 0.0..=600.0).text("Spacing"));
+            ui.add(egui::Slider::new(&mut params.shape_parameters[3], 0.0..=10.0).text("Omega"));
+            ui.add(
+                egui::Slider::new(&mut params.shape_parameters[4], -2.0..=2.0).text("Spin Speed"),
+            );
+            ui.add(egui::Slider::new(&mut params.shape_parameters[5], 0.0..=600.0).text("Spacing"));
 
             ui.separator();
 

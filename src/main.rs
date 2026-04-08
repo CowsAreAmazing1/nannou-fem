@@ -54,7 +54,7 @@ struct Params {
     angle_limit: f64,
 
     draw_triangulation: bool,
-    shape_parameters: [f32; 4], // [outer radius, inner radius, omega, spacing]
+    shape_parameters: [f32; 6], // [polygon resolution, outer radius, inner radius, omega, spin speed, spacing]
 
     refinement_success: Option<bool>,
     num_vertices: Option<usize>,
@@ -67,7 +67,7 @@ impl Default for Params {
             max_allowed_area: 10_000.0,
             angle_limit: 30.0,
             draw_triangulation: false,
-            shape_parameters: [200.0, 0.5, 4.0, 300.0],
+            shape_parameters: [100.0, 200.0, 0.5, 4.0, 1.0, 300.0],
             refinement_success: None,
             num_vertices: None,
         }
@@ -227,23 +227,28 @@ fn update(app: &App, model: &mut Model, _update: Update) {
     let half_w = w * 0.5;
     let half_h = h * 0.5;
 
-    let num = 100;
-    let radius_outer = model.params.shape_parameters[0];
-    let radius_inner = model.params.shape_parameters[1];
-    let omega = model.params.shape_parameters[2];
-    let spacing = model.params.shape_parameters[3];
+    let num = model.params.shape_parameters[0] as usize;
+    let radius_outer = model.params.shape_parameters[1];
+    let radius_inner = model.params.shape_parameters[2];
+    let omega = model.params.shape_parameters[3];
+    let spin_speed = model.params.shape_parameters[4];
+    let spacing = model.params.shape_parameters[5];
     let left_loop = (0..num)
         .map(|i| {
             let angle = map_range(i, 0, num, 0.0, TAU);
-            let rad = radius_outer * (1.0 + radius_inner * (omega * angle + app.time).sin());
+            let rad = radius_outer
+                * (1.0 + radius_inner * (omega * (angle + spin_speed * app.time)).sin());
             vec2(rad * angle.cos() - spacing, rad * angle.sin())
         })
         .collect::<Vec<_>>();
     let right_loop = (0..num)
         .map(|i| {
             let angle = map_range(i, 0, num, 0.0, TAU);
-            let rad = radius_outer * (1.0 + radius_inner * (omega * angle + app.time).sin());
-            vec2(rad * angle.cos() + spacing, rad * angle.sin())
+            let rad = radius_outer * (1.0 + radius_inner * (omega * angle).sin());
+            vec2(
+                rad * (angle - spin_speed * app.time).cos() + spacing,
+                rad * (angle - spin_speed * app.time).sin(),
+            )
         })
         .collect::<Vec<_>>();
     let constrained_loops = vec![left_loop, right_loop];
