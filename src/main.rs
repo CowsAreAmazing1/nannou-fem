@@ -3,7 +3,7 @@ use nannou_egui::Egui;
 use spade::{ConstrainedDelaunayTriangulation, HasPosition, Point2, Triangulation};
 
 use crate::egui::UiState;
-use crate::fem::{build_mesh, point_in_any_polygon};
+use crate::fem::{Body, build_mesh, point_in_any_polygon};
 use crate::gpu::GpuState;
 mod egui;
 mod fem;
@@ -132,22 +132,19 @@ fn model(app: &App) -> Model {
     let half_w = w * 0.5;
     let half_h = h * 0.5;
 
-    let radius = 200.0;
-    let num = 100;
-    let left_loop = (0..num)
-        .map(|i| {
-            let angle = map_range(i, 0, num, 0.0, TAU);
-            let rad = radius * (1.0 + 0.5 * (4.0 * angle).sin());
-            vec2(rad * angle.cos() - 300.0, rad * angle.sin())
-        })
-        .collect::<Vec<_>>();
-    let right_loop = (0..num)
-        .map(|i| {
-            let angle = map_range(i, 0, num, 0.0, TAU);
-            let rad = radius * (1.0 + 0.5 * (4.0 * angle).sin());
-            vec2(rad * angle.cos() + 300.0, rad * angle.sin())
-        })
-        .collect::<Vec<_>>();
+    let left_body = Body::new(100, 1.0, |t| {
+        let angle = t * TAU;
+        let rad = 200.0 * (1.0 + 0.5 * (4.0 * angle).sin());
+        vec2(rad * angle.cos() - 300.0, rad * angle.sin())
+    });
+    let right_body = Body::new(100, 1.0, |t| {
+        let angle = t * TAU;
+        let rad = 200.0 * (1.0 + 0.5 * (4.0 * angle).sin());
+        vec2(rad * angle.cos() + 300.0, rad * angle.sin())
+    });
+
+    let left_loop = left_body.sample_boundary();
+    let right_loop = right_body.sample_boundary();
     let constrained_loops = vec![left_loop, right_loop];
 
     let (triangulation, _) = setup_triangulation(&constrained_loops, half_w, half_h, None);
@@ -218,30 +215,30 @@ fn update(app: &App, model: &mut Model, _update: Update) {
     let half_w = w * 0.5;
     let half_h = h * 0.5;
 
-    let num = model.params.shape_parameters[0] as usize;
+    let resolution = model.params.shape_parameters[0] as usize;
     let radius_outer = model.params.shape_parameters[1];
     let radius_inner = model.params.shape_parameters[2];
     let omega = model.params.shape_parameters[3];
     let spin_speed = model.params.shape_parameters[4];
     let spacing = model.params.shape_parameters[5];
-    let left_loop = (0..num)
-        .map(|i| {
-            let angle = map_range(i, 0, num, 0.0, TAU);
-            let rad = radius_outer
-                * (1.0 + radius_inner * (omega * (angle + spin_speed * app.time)).sin());
-            vec2(rad * angle.cos() - spacing, rad * angle.sin())
-        })
-        .collect::<Vec<_>>();
-    let right_loop = (0..num)
-        .map(|i| {
-            let angle = map_range(i, 0, num, 0.0, TAU);
-            let rad = radius_outer * (1.0 + radius_inner * (omega * angle).sin());
-            vec2(
-                rad * (angle - spin_speed * app.time).cos() + spacing,
-                rad * (angle - spin_speed * app.time).sin(),
-            )
-        })
-        .collect::<Vec<_>>();
+    let time = app.time;
+
+    let left_body = Body::new(resolution, 1.0, move |t| {
+        let angle = t * TAU;
+        let rad = radius_outer * (1.0 + radius_inner * (omega * (angle + spin_speed * time)).sin());
+        vec2(rad * angle.cos() - spacing, rad * angle.sin())
+    });
+    let right_body = Body::new(resolution, 1.0, move |t| {
+        let angle = t * TAU;
+        let rad = radius_outer * (1.0 + radius_inner * (omega * angle).sin());
+        vec2(
+            rad * (angle - spin_speed * time).cos() + spacing,
+            rad * (angle - spin_speed * time).sin(),
+        )
+    });
+
+    let left_loop = left_body.sample_boundary();
+    let right_loop = right_body.sample_boundary();
     let constrained_loops = vec![left_loop, right_loop];
 
     let params = spade::RefinementParameters::default()

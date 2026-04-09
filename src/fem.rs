@@ -1,6 +1,33 @@
 use nannou::prelude::*;
 use spade::{ConstrainedDelaunayTriangulation, HasPosition, Triangulation};
 
+// tri.area() and tri.center() are things
+
+pub struct Body {
+    generator: Box<dyn Fn(f32) -> Vec2>,
+    resolution: usize,
+    density: f32,
+}
+
+impl Body {
+    pub fn new(resolution: usize, density: f32, generator: impl Fn(f32) -> Vec2 + 'static) -> Self {
+        Self {
+            resolution,
+            density,
+            generator: Box::new(generator),
+        }
+    }
+
+    pub fn sample_boundary(&self) -> Vec<Vec2> {
+        (0..self.resolution)
+            .map(|i| {
+                let t = i as f32 / self.resolution as f32;
+                (self.generator)(t)
+            })
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FemMesh {
     pub positions: Vec<Vec2>,
