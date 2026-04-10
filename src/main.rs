@@ -3,7 +3,7 @@ use nannou_egui::Egui;
 use spade::{ConstrainedDelaunayTriangulation, HasPosition, Point2, Triangulation};
 
 use crate::egui::UiState;
-use crate::fem::{Body, build_mesh, point_in_any_polygon};
+use crate::fem::{Body, FemMesh};
 use crate::gpu::GpuState;
 mod egui;
 mod fem;
@@ -67,7 +67,7 @@ impl Default for Params {
             max_allowed_area: 10_000.0,
             angle_limit: 30.0,
             draw_triangulation: false,
-            shape_parameters: [100.0, 200.0, 0.5, 4.0, 1.0, 300.0],
+            shape_parameters: [100.0, 200.0, 0.5, 4.0, 1.0, 500.0],
             refinement_success: None,
             num_vertices: None,
         }
@@ -82,8 +82,8 @@ struct Model {
 }
 
 /// Sets up a constrained Delaunay triangulation, with the given vertices constrained in a closed loop, refines, and returns the triangulation. Returns the triangulation, and a boolean indicating whether the refinement finished without running out of vertices.
-fn setup_triangulation(
-    to_constrain: &[Vec<Vec2>],
+fn setup_triangulation<const N: usize>(
+    to_constrain: &Vec<[Vec2; N]>,
     half_width: f32,
     half_height: f32,
     refinement_params: Option<spade::RefinementParameters<f32>>,
@@ -132,41 +132,38 @@ fn model(app: &App) -> Model {
     let half_w = w * 0.5;
     let half_h = h * 0.5;
 
-    let left_body = Body::new(100, 1.0, |t| {
-        let angle = t * TAU;
-        let rad = 200.0 * (1.0 + 0.5 * (4.0 * angle).sin());
-        vec2(rad * angle.cos() - 300.0, rad * angle.sin())
-    });
-    let right_body = Body::new(100, 1.0, |t| {
-        let angle = t * TAU;
-        let rad = 200.0 * (1.0 + 0.5 * (4.0 * angle).sin());
-        vec2(rad * angle.cos() + 300.0, rad * angle.sin())
-    });
+    const N: usize = 100;
 
-    let left_loop = left_body.sample_boundary();
-    let right_loop = right_body.sample_boundary();
-    let constrained_loops = vec![left_loop, right_loop];
+    let bodies = [
+        Body::new(1.0, |t| {
+            let angle = t * TAU;
+            let rad = 200.0 * (1.0 + 0.5 * (4.0 * angle).sin());
+            vec2(rad * angle.cos() - 300.0, rad * angle.sin())
+        }),
+        Body::new(1.0, |t| {
+            let angle = t * TAU;
+            let rad = 200.0 * (1.0 + 0.5 * (4.0 * angle).sin());
+            vec2(rad * angle.cos() + 300.0, rad * angle.sin())
+        }),
+    ];
+
+    let constrained_loops = bodies.iter().map(|b| b.sample_boundary::<N>()).collect();
 
     let (triangulation, _) = setup_triangulation(&constrained_loops, half_w, half_h, None);
 
-    let fem_mesh = build_mesh(&triangulation, &constrained_loops);
-
-    let values = fem_mesh
-        .positions
-        .iter()
-        .map(|&p| {
-            if point_in_any_polygon(p, &constrained_loops) {
-                1.0
-            } else {
-                0.0
-            }
-        })
-        .collect::<Vec<_>>();
+    let mut fem_mesh = FemMesh::build_mesh(&triangulation, &constrained_loops);
+    fem_mesh.compute_density(&constrained_loops, &bodies);
 
     let window = app.main_window();
     let device = window.device();
     let queue = window.queue();
-    let gpu = GpuState::new(device, queue, &triangulation, window.rect(), Some(values));
+    let gpu = GpuState::new(
+        device,
+        queue,
+        &triangulation,
+        window.rect(),
+        Some(fem_mesh.node_density),
+    );
 
     println!(
         "Triangulation has {} vertices and {} faces",
@@ -215,7 +212,7 @@ fn update(app: &App, model: &mut Model, _update: Update) {
     let half_w = w * 0.5;
     let half_h = h * 0.5;
 
-    let resolution = model.params.shape_parameters[0] as usize;
+    // let resolution = model.params.shape_parameters[0] as usize;
     let radius_outer = model.params.shape_parameters[1];
     let radius_inner = model.params.shape_parameters[2];
     let omega = model.params.shape_parameters[3];
@@ -223,52 +220,47 @@ fn update(app: &App, model: &mut Model, _update: Update) {
     let spacing = model.params.shape_parameters[5];
     let time = app.time;
 
-    let left_body = Body::new(resolution, 1.0, move |t| {
-        let angle = t * TAU;
-        let rad = radius_outer * (1.0 + radius_inner * (omega * (angle + spin_speed * time)).sin());
-        vec2(rad * angle.cos() - spacing, rad * angle.sin())
-    });
-    let right_body = Body::new(resolution, 1.0, move |t| {
-        let angle = t * TAU;
-        let rad = radius_outer * (1.0 + radius_inner * (omega * angle).sin());
-        vec2(
-            rad * (angle - spin_speed * time).cos() + spacing,
-            rad * (angle - spin_speed * time).sin(),
-        )
-    });
+    let bodies = [
+        Body::new(1.0, move |t| {
+            let angle = t * TAU;
+            let rad =
+                radius_outer * (1.0 + radius_inner * (omega * (angle + spin_speed * time)).sin());
+            vec2(rad * angle.cos() - spacing, rad * angle.sin())
+        }),
+        Body::new(1.0, move |t| {
+            let angle = t * TAU;
+            let rad = radius_outer * (1.0 + radius_inner * (omega * angle).sin());
+            vec2(
+                rad * (angle - spin_speed * time).cos() + spacing,
+                rad * (angle - spin_speed * time).sin(),
+            )
+        }),
+    ];
 
-    let left_loop = left_body.sample_boundary();
-    let right_loop = right_body.sample_boundary();
-    let constrained_loops = vec![left_loop, right_loop];
+    const N: usize = 100;
+    let constrained_loops = bodies.iter().map(|b| b.sample_boundary::<N>()).collect();
 
     let params = spade::RefinementParameters::default()
         .with_max_additional_vertices(model.params.max_additional_vertices)
         .with_max_allowed_area(model.params.max_allowed_area)
         .with_angle_limit(spade::AngleLimit::from_deg(model.params.angle_limit));
-
     let (triangulation, refinement_success) =
         setup_triangulation(&constrained_loops, half_w, half_h, Some(params));
     model.triangulation = triangulation;
     model.params.refinement_success = Some(refinement_success);
     model.params.num_vertices = Some(model.triangulation.vertices().count());
 
-    let fem_mesh = build_mesh(&model.triangulation, &constrained_loops);
-    let values = fem_mesh
-        .positions
-        .iter()
-        .map(|&p| {
-            if point_in_any_polygon(p, &constrained_loops) {
-                1.0
-            } else {
-                0.0
-            }
-        })
-        .collect::<Vec<_>>();
+    let mut fem_mesh = FemMesh::build_mesh(&model.triangulation, &constrained_loops);
+    fem_mesh.compute_density(&constrained_loops, &bodies);
 
     let (vertices, tris) = GpuState::prepare_geometry(&model.triangulation, rect);
-    model
-        .gpu
-        .upload_mesh(device, queue, &vertices, &tris, Some(&values));
+    model.gpu.upload_mesh(
+        device,
+        queue,
+        &vertices,
+        &tris,
+        Some(&fem_mesh.node_density),
+    );
 }
 
 fn view(app: &App, model: &Model, frame: Frame) {
