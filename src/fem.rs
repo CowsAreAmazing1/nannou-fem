@@ -1,7 +1,6 @@
 use nannou::prelude::*;
 use spade::{ConstrainedDelaunayTriangulation, HasPosition, Triangulation};
-
-// tri.area() and tri.center() are things
+use std::collections::HashMap;
 
 pub struct Body {
     generator: Box<dyn Fn(f32) -> Vec2>,
@@ -216,5 +215,46 @@ impl FemMesh {
         }
 
         node_rho
+    }
+
+    pub fn setup_system(&self) -> (HashMap<(usize, usize), f32>, Vec<f32>) {
+        let n = self.positions.len();
+        let mut k_global = HashMap::<(usize, usize), f32>::new();
+        let mut f_global = vec![0.0f32; n];
+
+        for (e_id, &[n0, n1, n2]) in self.elements.iter().enumerate() {
+            let p0 = self.positions[n0];
+            let p1 = self.positions[n1];
+            let p2 = self.positions[n2];
+
+            let two_a = (p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y);
+            let a = 0.5 * two_a.abs();
+            // if a <= 1e-12 {
+            //     continue;
+            // }
+
+            let b = [p1.y - p2.y, p2.y - p0.y, p0.y - p1.y];
+            let c = [p2.x - p1.x, p0.x - p2.x, p1.x - p0.x];
+
+            let mut k_local = [[0.0f32; 3]; 3];
+            for i in 0..3 {
+                for j in 0..3 {
+                    k_local[i][j] = (b[i] * b[j] + c[i] * c[j]) / (4.0 * a);
+                }
+            }
+
+            let rho_e = self.element_density[e_id];
+            let fe_i = rho_e * a / 3.0;
+
+            for (li, gi) in (0..3).zip([n0, n1, n2]) {
+                f_global[gi] += fe_i;
+
+                for (lj, gj) in (0..3).zip([n0, n1, n2]) {
+                    *k_global.entry((gi, gj)).or_insert(0.0) += k_local[li][lj];
+                }
+            }
+        }
+
+        (k_global, f_global)
     }
 }

@@ -1,6 +1,7 @@
 use nannou::prelude::*;
 use nannou_egui::Egui;
 use spade::{ConstrainedDelaunayTriangulation, HasPosition, Point2, Triangulation};
+use std::collections::HashMap;
 
 use crate::egui::UiState;
 use crate::fem::{Body, FemMesh};
@@ -79,9 +80,10 @@ struct Model {
     gpu: GpuState,
     ui: UiState,
     params: Params,
+    k_matrix: Option<HashMap<(usize, usize), f32>>,
 }
 
-/// Sets up a constrained Delaunay triangulation, with the given vertices constrained in a closed loop, refines, and returns the triangulation. Returns the triangulation, and a boolean indicating whether the refinement finished without running out of vertices.
+/// Sets up a constrained Delaunay triangulation, with the given vertices constrained in a closed loop, then refines. Returns the triangulation, and a boolean indicating whether the refinement finished without running out of vertices.
 fn setup_triangulation<const N: usize>(
     to_constrain: &Vec<[Vec2; N]>,
     half_width: f32,
@@ -197,12 +199,11 @@ fn model(app: &App) -> Model {
         gpu,
         ui,
         params,
+        k_matrix: None,
     }
 }
 
 fn update(app: &App, model: &mut Model, _update: Update) {
-    model.ui.update(&mut model.params);
-
     let window = app.main_window();
     let rect = window.rect();
     let device = window.device();
@@ -244,6 +245,7 @@ fn update(app: &App, model: &mut Model, _update: Update) {
         .with_max_additional_vertices(model.params.max_additional_vertices)
         .with_max_allowed_area(model.params.max_allowed_area)
         .with_angle_limit(spade::AngleLimit::from_deg(model.params.angle_limit));
+
     let (triangulation, refinement_success) =
         setup_triangulation(&constrained_loops, half_w, half_h, Some(params));
     model.triangulation = triangulation;
@@ -252,6 +254,8 @@ fn update(app: &App, model: &mut Model, _update: Update) {
 
     let mut fem_mesh = FemMesh::build_mesh(&model.triangulation, &constrained_loops);
     fem_mesh.compute_density(&constrained_loops, &bodies);
+    let (k, _) = fem_mesh.setup_system();
+    model.k_matrix = Some(k);
 
     let (vertices, tris) = GpuState::prepare_geometry(&model.triangulation, rect);
     model.gpu.upload_mesh(
@@ -261,6 +265,8 @@ fn update(app: &App, model: &mut Model, _update: Update) {
         &tris,
         Some(&fem_mesh.node_density),
     );
+
+    model.ui.update(&mut model.params, model.k_matrix.as_ref());
 }
 
 fn view(app: &App, model: &Model, frame: Frame) {

@@ -1,6 +1,15 @@
+use std::collections::HashMap;
+
 use nannou_egui::{self, Egui, egui};
 
 use nannou_egui::egui::{Label, Response, RichText, Slider, Style, Ui, Widget};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MatrixColorMode {
+    Density,
+    ValueSum,
+    AbsValueSum,
+}
 
 pub struct StyledSlider<'a> {
     title: String,
@@ -52,19 +61,28 @@ impl<'a> Widget for StyledSlider<'a> {
 
 pub struct UiState {
     ui: Egui,
+    matrix_color_mode: MatrixColorMode,
 }
 
 impl UiState {
     pub fn new(ui: Egui) -> Self {
-        Self { ui }
+        Self {
+            ui,
+            matrix_color_mode: MatrixColorMode::Density,
+        }
     }
 
     pub fn handle_raw_event(&mut self, event: &nannou::winit::event::WindowEvent) {
         self.ui.handle_raw_event(event);
     }
 
-    pub fn update(&mut self, params: &mut crate::Params) {
-        let ctx = self.ui.begin_frame();
+    pub fn update(
+        &mut self,
+        params: &mut crate::Params,
+        k_matrix: Option<&HashMap<(usize, usize), f32>>,
+    ) {
+        let (ui_state, matrix_color_mode) = (&mut self.ui, &mut self.matrix_color_mode);
+        let ctx = ui_state.begin_frame();
         egui::Window::new("Controls").show(&ctx, |ui| {
             ui.add(
                 egui::Slider::new(&mut params.shape_parameters[0], 2.0..=10_000.0)
@@ -130,6 +148,185 @@ impl UiState {
             ui.separator();
 
             ui.checkbox(&mut params.draw_triangulation, "Draw Triangulation")
+        });
+
+        if let Some(k_matrix) = k_matrix {
+            Self::matrix_window(&ctx, k_matrix, matrix_color_mode);
+        }
+    }
+
+    fn matrix_window(
+        ctx: &egui::Context,
+        k_matrix: &HashMap<(usize, usize), f32>,
+        matrix_color_mode: &mut MatrixColorMode,
+    ) {
+        egui::Window::new("K Matrix Structure").show(ctx, |ui| {
+            let Some(&(max_row, _)) = k_matrix.keys().max_by_key(|(r, _)| r) else {
+                ui.label("K matrix is empty.");
+                return;
+            };
+            let Some(&(_, max_col)) = k_matrix.keys().max_by_key(|(_, c)| c) else {
+                ui.label("K matrix is empty.");
+                return;
+            };
+
+            let rows = max_row + 1;
+            let cols = max_col + 1;
+            let nnz = k_matrix.len();
+            let total_cells = rows.saturating_mul(cols).max(1);
+            let density_pct = (nnz as f32 / total_cells as f32) * 100.0;
+
+            ui.label(format!(
+                "{}x{} | non-zero entries: {} | density: {:.4}%",
+                rows, cols, nnz, density_pct
+            ));
+
+            ui.horizontal(|ui| {
+                ui.label("Color Mode:");
+                ui.selectable_value(matrix_color_mode, MatrixColorMode::Density, "Density");
+                ui.selectable_value(matrix_color_mode, MatrixColorMode::ValueSum, "Value Sum");
+                ui.selectable_value(
+                    matrix_color_mode,
+                    MatrixColorMode::AbsValueSum,
+                    "Abs Value Sum",
+                );
+            });
+
+            // Cap the displayed grid size and aggregate large matrices into buckets.
+            let max_cells_per_axis = 120usize;
+            let bucket_rows = rows.min(max_cells_per_axis);
+            let bucket_cols = cols.min(max_cells_per_axis);
+            let row_stride = rows.div_ceil(bucket_rows).max(1);
+            let col_stride = cols.div_ceil(bucket_cols).max(1);
+
+            let mut buckets = vec![0u32; bucket_rows * bucket_cols];
+            let mut value_sums = vec![0.0f32; bucket_rows * bucket_cols];
+            let mut abs_value_sums = vec![0.0f32; bucket_rows * bucket_cols];
+            for (&(row, col), &value) in k_matrix {
+                let bucket_row = (row / row_stride).min(bucket_rows - 1);
+                let bucket_col = (col / col_stride).min(bucket_cols - 1);
+                let idx = bucket_row * bucket_cols + bucket_col;
+                buckets[idx] += 1;
+                value_sums[idx] += value;
+                abs_value_sums[idx] += value.abs();
+            }
+
+            let max_bucket = buckets.iter().copied().max().unwrap_or(1) as f32;
+            let max_abs_sum = value_sums
+                .iter()
+                .copied()
+                .map(f32::abs)
+                .fold(0.0f32, f32::max)
+                .max(1.0e-12);
+            let max_abs_value_sum = abs_value_sums
+                .iter()
+                .copied()
+                .fold(0.0f32, f32::max)
+                .max(1.0e-12);
+            let cell_size = 6.0;
+            let canvas_size = egui::vec2(
+                bucket_cols as f32 * cell_size,
+                bucket_rows as f32 * cell_size,
+            );
+
+            egui::ScrollArea::both().show(ui, |ui| {
+                let (rect, _) = ui.allocate_exact_size(canvas_size, egui::Sense::hover());
+                let painter = ui.painter_at(rect);
+
+                for bucket_row in 0..bucket_rows {
+                    for bucket_col in 0..bucket_cols {
+                        let idx = bucket_row * bucket_cols + bucket_col;
+                        let count = buckets[idx] as f32;
+                        let bucket_sum = value_sums[idx];
+                        let bucket_abs_sum = abs_value_sums[idx];
+
+                        let color = match *matrix_color_mode {
+                            MatrixColorMode::Density => {
+                                let intensity = if count <= 0.0 {
+                                    0.0
+                                } else {
+                                    // sqrt improves contrast for sparse patterns.
+                                    (count / max_bucket).sqrt()
+                                };
+
+                                if count <= 0.0 {
+                                    egui::Color32::from_gray(245)
+                                } else {
+                                    let green = (70.0 + 180.0 * intensity) as u8;
+                                    egui::Color32::from_rgb(20, green, 40)
+                                }
+                            }
+                            MatrixColorMode::ValueSum => {
+                                let intensity = (bucket_sum.abs() / max_abs_sum).sqrt();
+                                if intensity <= 0.0001 {
+                                    egui::Color32::from_gray(245)
+                                } else if bucket_sum >= 0.0 {
+                                    let green = (70.0 + 180.0 * intensity) as u8;
+                                    egui::Color32::from_rgb(20, green, 40)
+                                } else {
+                                    let red = (70.0 + 180.0 * intensity) as u8;
+                                    egui::Color32::from_rgb(red, 30, 30)
+                                }
+                            }
+                            MatrixColorMode::AbsValueSum => {
+                                let intensity = (bucket_abs_sum / max_abs_value_sum).sqrt();
+                                if intensity <= 0.0001 {
+                                    egui::Color32::from_gray(245)
+                                } else {
+                                    // Continuous 3-stop gradient: blue -> yellow -> red.
+                                    let (r, g, b) = if intensity < 0.5 {
+                                        let t = intensity / 0.5;
+                                        let r = (20.0 + (255.0 - 20.0) * t) as u8;
+                                        let g = (70.0 + (220.0 - 70.0) * t) as u8;
+                                        let b = (170.0 + (30.0 - 170.0) * t) as u8;
+                                        (r, g, b)
+                                    } else {
+                                        let t = (intensity - 0.5) / 0.5;
+                                        let r = (255.0 + (200.0 - 255.0) * t) as u8;
+                                        let g = (220.0 + (30.0 - 220.0) * t) as u8;
+                                        let b = (30.0) as u8;
+                                        (r, g, b)
+                                    };
+                                    egui::Color32::from_rgb(r, g, b)
+                                }
+                            }
+                        };
+
+                        let x = rect.min.x + bucket_col as f32 * cell_size;
+                        let y = rect.min.y + bucket_row as f32 * cell_size;
+                        let cell_rect = egui::Rect::from_min_size(
+                            egui::pos2(x, y),
+                            egui::vec2(cell_size - 1.0, cell_size - 1.0),
+                        );
+                        painter.rect_filled(cell_rect, 0.0, color);
+                    }
+                }
+            });
+
+            if bucket_rows < rows || bucket_cols < cols {
+                ui.small(format!(
+                    "Downsampled to {}x{} buckets (each cell covers up to {}x{} matrix entries).",
+                    bucket_rows, bucket_cols, row_stride, col_stride
+                ));
+            }
+
+            ui.horizontal(|ui| match *matrix_color_mode {
+                MatrixColorMode::Density => {
+                    ui.colored_label(egui::Color32::from_gray(245), "Empty");
+                    ui.colored_label(egui::Color32::from_rgb(20, 120, 40), "Sparse");
+                    ui.colored_label(egui::Color32::from_rgb(20, 250, 40), "Dense");
+                }
+                MatrixColorMode::ValueSum => {
+                    ui.colored_label(egui::Color32::from_rgb(200, 30, 30), "Negative sum");
+                    ui.colored_label(egui::Color32::from_gray(245), "Near zero sum");
+                    ui.colored_label(egui::Color32::from_rgb(20, 200, 40), "Positive sum");
+                }
+                MatrixColorMode::AbsValueSum => {
+                    ui.colored_label(egui::Color32::from_gray(245), "Low |sum(value)|");
+                    ui.colored_label(egui::Color32::from_rgb(255, 220, 30), "Medium");
+                    ui.colored_label(egui::Color32::from_rgb(200, 30, 30), "High |sum(value)|");
+                }
+            });
         });
     }
 
