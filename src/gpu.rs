@@ -35,7 +35,6 @@ impl ColorMapUniform {
 
 pub struct GpuState {
     pub render_pipeline: wgpu::RenderPipeline,
-    // uniform_buffer: wgpu::Buffer,
     pub vertex_buffer: wgpu::Buffer,
     pub tri_buffer: wgpu::Buffer,
     pub values_buffer: wgpu::Buffer,
@@ -224,21 +223,6 @@ impl GpuState {
             })
             .collect::<Vec<u32>>();
 
-        // let num = vertices.len() as f32;
-        // let values = (0..vertices.len())
-        //     .map(|i| i as f32 / num)
-        //     .collect::<Vec<_>>();
-        // let values = vertices
-        //     .iter()
-        //     .map(|&[x, y]| {
-        //         let dist = (x * x + y * y).sqrt();
-        //         1.0 - dist.clamp(0.0, 1.0)
-        //     })
-        //     .collect::<Vec<_>>();
-        // let values = (0..vertices.len())
-        //     .map(|_| random_f32())
-        //     .collect::<Vec<_>>();
-
         (vertices, tris)
     }
 
@@ -252,13 +236,6 @@ impl GpuState {
     where
         V: HasPosition<Scalar = f32>,
     {
-        // let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        //     label: Some("Uniform Buffer"),
-        //     size: std::mem::size_of::<Uniforms>() as u64,
-        //     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        //     mapped_at_creation: false,
-        // });
-
         let (vertices, tris) = GpuState::prepare_geometry(triangulation, window_rect);
 
         let values = values.unwrap_or_else(|| {
@@ -298,17 +275,6 @@ impl GpuState {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Render Bind Group Layout"),
             entries: &[
-                // Binding 0: Uniforms
-                // wgpu::BindGroupLayoutEntry {
-                //     binding: 0,
-                //     visibility: wgpu::ShaderStages::FRAGMENT,
-                //     ty: wgpu::BindingType::Buffer {
-                //         ty: wgpu::BufferBindingType::Uniform,
-                //         has_dynamic_offset: false,
-                //         min_binding_size: None,
-                //     },
-                //     count: None,
-                // },
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX,
@@ -366,10 +332,6 @@ impl GpuState {
             label: Some("Render Bind Group"),
             layout: &bind_group_layout,
             entries: &[
-                // wgpu::BindGroupEntry {
-                //     binding: 0,
-                //     resource: uniform_buffer.as_entire_binding(),
-                // },
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: vertex_buffer.as_entire_binding(),

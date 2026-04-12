@@ -49,7 +49,16 @@ impl HasPosition for Vertex {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Visual {
+    Density,
+    Potential,
+    Acceleration,
+}
+
 struct Params {
+    visual: Visual,
+
     shape_parameters: [f32; 6], // [polygon resolution, outer radius, inner radius, omega, spin speed, spacing]
 
     max_additional_vertices: usize,
@@ -71,6 +80,8 @@ struct Params {
 impl Default for Params {
     fn default() -> Self {
         Self {
+            visual: Visual::Potential,
+
             shape_parameters: [100.0, 200.0, 0.5, 4.0, 1.0, 500.0],
             max_additional_vertices: 10_000,
             max_allowed_area: 800.0,
@@ -146,7 +157,8 @@ fn model(app: &App) -> Model {
         .msaa_samples(1)
         .raw_event(raw_ui_event)
         .view(view)
-        .maximized(true)
+        // .maximized(true)
+        .size(1000, 1000)
         .build()
         .unwrap();
     let rect = app.window(win).unwrap().rect();
@@ -202,16 +214,6 @@ fn model(app: &App) -> Model {
         fem_mesh.elements.len(),
         fem_mesh.is_boundary.iter().filter(|&&b| b).count()
     );
-    // println!(
-    //     "FEM step 2: assembled Poisson system with {} nodes, {} non-zeros, rhs size {}",
-    //     poisson.node_count(),
-    //     poisson.nnz(),
-    //     poisson.rhs.len()
-    // );
-    // println!(
-    //     "FEM step 3: CG converged={}, iterations={}, residual_l2={:.3e}",
-    //     solve.converged, solve.iterations, solve.residual_l2
-    // );
 
     let egui = Egui::from_window(&window);
     let ui = UiState::new(egui);
@@ -223,6 +225,58 @@ fn model(app: &App) -> Model {
         params,
         k_matrix: None,
     }
+}
+
+fn normalize_vec(v: Vec<f32>) -> Vec<f32> {
+    let max = v.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let min = v.iter().cloned().fold(f32::INFINITY, f32::min);
+    v.into_iter()
+        .map(|x| (x - min) / (max - min + 1.0e-6)) // add small epsilon to avoid division by zero
+        .collect()
+}
+
+/// Compute nodal acceleration magnitude from scalar potential values.
+/// For linear triangular elements, grad(phi) is constant per element.
+fn node_acceleration_magnitude(mesh: &FemMesh, potential: &[f32]) -> Vec<f32> {
+    let n = mesh.positions.len();
+    let mut node_acc = vec![vec2(0.0, 0.0); n];
+    let mut node_weight = vec![0.0f32; n];
+
+    for &[i0, i1, i2] in &mesh.elements {
+        let p0 = mesh.positions[i0];
+        let p1 = mesh.positions[i1];
+        let p2 = mesh.positions[i2];
+
+        let two_a = (p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y);
+        let area = 0.5 * two_a.abs();
+        if area <= 1.0e-12 {
+            continue;
+        }
+
+        let b = [p1.y - p2.y, p2.y - p0.y, p0.y - p1.y];
+        let c = [p2.x - p1.x, p0.x - p2.x, p1.x - p0.x];
+        let phi = [potential[i0], potential[i1], potential[i2]];
+
+        let mut grad_phi = vec2(0.0, 0.0);
+        for k in 0..3 {
+            grad_phi += vec2(b[k], c[k]) * (phi[k] / (2.0 * area));
+        }
+
+        // a = -grad(phi)
+        let a_elem = -grad_phi;
+        for &idx in &[i0, i1, i2] {
+            node_acc[idx] += a_elem * area;
+            node_weight[idx] += area;
+        }
+    }
+
+    for i in 0..n {
+        if node_weight[i] > 0.0 {
+            node_acc[i] /= node_weight[i];
+        }
+    }
+
+    node_acc.into_iter().map(|a| a.length()).collect()
 }
 
 fn update(app: &App, model: &mut Model, _update: Update) {
@@ -259,6 +313,13 @@ fn update(app: &App, model: &mut Model, _update: Update) {
                 rad * (angle - spin_speed * time).sin(),
             )
         }),
+        // Body::new(1.0, |t| {
+        //     vec2(200.0 * (TAU * t).cos(), 200.0 * (TAU * t).sin())
+        // }),
+        // Body::new(5.0, move |t| {
+        //     vec2(500.0 * time.sin(), 500.0 * time.cos())
+        //         + vec2(20.0 * (TAU * t).cos(), 20.0 * (TAU * t).sin())
+        // }),
     ];
 
     const N: usize = 100;
@@ -299,21 +360,19 @@ fn update(app: &App, model: &mut Model, _update: Update) {
     // model.k_matrix = Some(ls.k);
     model.params.solution_success = Some(solution_success);
 
-    let mut sol = solution.as_slice().to_vec();
-    let (mut mn, mut mx) = (f32::INFINITY, f32::NEG_INFINITY);
-    for &v in &sol {
-        mn = mn.min(v);
-        mx = mx.max(v);
-    }
-    let denom = (mx - mn).max(1e-8);
-    for v in &mut sol {
-        *v = (*v - mn) / denom;
-    }
+    let sol = solution.as_slice().to_vec();
+    let acc = node_acceleration_magnitude(&fem_mesh, &sol);
+
+    let values = &normalize_vec(match model.params.visual {
+        Visual::Density => fem_mesh.node_density,
+        Visual::Potential => sol,
+        Visual::Acceleration => acc,
+    });
 
     let (vertices, tris) = GpuState::prepare_geometry(&model.triangulation, rect);
     model
         .gpu
-        .upload_mesh(device, queue, &vertices, &tris, Some(&sol));
+        .upload_mesh(device, queue, &vertices, &tris, Some(values));
     model.gpu.upload_render_settings(
         queue,
         model.params.contour_steps,

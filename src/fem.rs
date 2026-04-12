@@ -29,10 +29,6 @@ impl Body {
     }
 }
 
-// fn dot(a: &[f32], b: &[f32]) -> f32 {
-//     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum::<f32>()
-// }
-
 /// Checks if `point` is on the line segment defined by points `a` and `b`, within a certain tolerance `eps`.
 fn point_on_segment(point: Vec2, a: Vec2, b: Vec2, eps: f32) -> bool {
     let ab = b - a;
@@ -246,60 +242,10 @@ impl Operator for LinearSystem {
 }
 
 impl LinearSystem {
-    // pub fn from_mesh(mesh: &FemMesh) -> Self {
-    //     let n = mesh.positions.len();
-    //     let mut k_trip = TriMat::<f32>::with_capacity((n, n), mesh.elements.len() * 9);
-    //     let mut f = vec![0.0f32; n];
-
-    //     for (e_id, &[n0, n1, n2]) in mesh.elements.iter().enumerate() {
-    //         let p0 = mesh.positions[n0];
-    //         let p1 = mesh.positions[n1];
-    //         let p2 = mesh.positions[n2];
-
-    //         let two_a = (p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y);
-    //         let a = 0.5 * two_a.abs();
-    //         // if a <= 1e-12 {
-    //         //     continue;
-    //         // }
-
-    //         let b = [p1.y - p2.y, p2.y - p0.y, p0.y - p1.y];
-    //         let c = [p2.x - p1.x, p0.x - p2.x, p1.x - p0.x];
-
-    //         let mut k_local = [[0.0f32; 3]; 3];
-    //         for i in 0..3 {
-    //             for j in 0..3 {
-    //                 k_local[i][j] = (b[i] * b[j] + c[i] * c[j]) / (4.0 * a);
-    //             }
-    //         }
-
-    //         let rho_e = mesh.element_density[e_id];
-    //         let fe_i = rho_e * a / 3.0;
-
-    //         let nodes = [n0, n1, n2];
-    //         for (li, &gi) in nodes.iter().enumerate() {
-    //             f[gi] += fe_i;
-
-    //             for (lj, &gj) in nodes.iter().enumerate() {
-    //                 k_trip.add_triplet(gi, gj, k_local[li][lj]);
-    //             }
-    //         }
-    //     }
-
-    //     let k = k_trip.to_csr();
-    //     let f = DVector::from_vec(f);
-
-    //     LinearSystem { k, f }
-    // }
-
-    /// Assembles `Kx=f` with Dirichlet constraints applied directly during
-    /// assembly. `dirichlet_values[i] = Some(value)` marks node `i` fixed.
+    /// Builds the system of equations `Kx = f` from a `FemMesh` with computed density values
+    /// and specified DIrichlet boundary conditions.
     pub fn from_mesh(mesh: &FemMesh, dirichlet_values: &[Option<f32>]) -> Self {
         let n = mesh.positions.len();
-        assert_eq!(
-            dirichlet_values.len(),
-            n,
-            "dirichlet_values length must match node count"
-        );
 
         let mut is_fixed = vec![false; n];
         let mut fixed_value = vec![0.0f32; n];

@@ -85,6 +85,19 @@ impl UiState {
         let (ui_state, matrix_color_mode) = (&mut self.ui, &mut self.matrix_color_mode);
         let ctx = ui_state.begin_frame();
         egui::Window::new("Controls").show(&ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Visual:");
+                ui.selectable_value(&mut params.visual, crate::Visual::Density, "Density");
+                ui.selectable_value(&mut params.visual, crate::Visual::Potential, "Potential");
+                ui.selectable_value(
+                    &mut params.visual,
+                    crate::Visual::Acceleration,
+                    "Acceleration",
+                );
+            });
+
+            ui.separator();
+
             ui.add(
                 egui::Slider::new(&mut params.shape_parameters[0], 2.0..=10_000.0)
                     .integer()
@@ -107,7 +120,7 @@ impl UiState {
             ui.separator();
 
             ui.add(
-                egui::Slider::new(&mut params.max_additional_vertices, 0..=100_000)
+                egui::Slider::new(&mut params.max_additional_vertices, 0..=1_000_000)
                     .text("Max Additional Vertices"),
             );
             ui.add(StyledSlider::new(
