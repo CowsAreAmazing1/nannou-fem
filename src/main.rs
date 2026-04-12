@@ -4,7 +4,7 @@ use spade::{ConstrainedDelaunayTriangulation, HasPosition, Point2, Triangulation
 use std::collections::HashMap;
 
 use crate::egui::UiState;
-use crate::fem::{Body, FemMesh};
+use crate::fem::{Body, FemMesh, LinearSystem};
 use crate::gpu::GpuState;
 mod egui;
 mod fem;
@@ -213,6 +213,7 @@ fn update(app: &App, model: &mut Model, _update: Update) {
     let half_w = w * 0.5;
     let half_h = h * 0.5;
 
+    // Build polygons
     // let resolution = model.params.shape_parameters[0] as usize;
     let radius_outer = model.params.shape_parameters[1];
     let radius_inner = model.params.shape_parameters[2];
@@ -241,6 +242,7 @@ fn update(app: &App, model: &mut Model, _update: Update) {
     const N: usize = 100;
     let constrained_loops = bodies.iter().map(|b| b.sample_boundary::<N>()).collect();
 
+    // Triangulate and refine
     let params = spade::RefinementParameters::default()
         .with_max_additional_vertices(model.params.max_additional_vertices)
         .with_max_allowed_area(model.params.max_allowed_area)
@@ -252,19 +254,43 @@ fn update(app: &App, model: &mut Model, _update: Update) {
     model.params.refinement_success = Some(refinement_success);
     model.params.num_vertices = Some(model.triangulation.vertices().count());
 
+    // Build a Mesh
     let mut fem_mesh = FemMesh::build_mesh(&model.triangulation, &constrained_loops);
     fem_mesh.compute_density(&constrained_loops, &bodies);
-    let (k, _) = fem_mesh.setup_system();
-    model.k_matrix = Some(k);
+
+    let mut dirichlet_values = vec![None; fem_mesh.positions.len()];
+    let eps = 1.0e-3;
+    for (i, &p) in fem_mesh.positions.iter().enumerate() {
+        let on_screen_edge = (p.x - -half_w).abs() < eps
+            || (p.x - half_w).abs() < eps
+            || (p.y - half_h).abs() < eps
+            || (p.y - -half_h).abs() < eps;
+
+        if on_screen_edge {
+            dirichlet_values[i] = Some(0.0);
+        }
+    }
+
+    // Build and solve a linear system
+    let ls = LinearSystem::from_mesh(&fem_mesh, &dirichlet_values);
+    let solution = LinearSystem::solve(ls);
+    // model.k_matrix = Some(ls.k);
+
+    let mut sol = solution.as_slice().to_vec();
+    let (mut mn, mut mx) = (f32::INFINITY, f32::NEG_INFINITY);
+    for &v in &sol {
+        mn = mn.min(v);
+        mx = mx.max(v);
+    }
+    let denom = (mx - mn).max(1e-8);
+    for v in &mut sol {
+        *v = (*v - mn) / denom;
+    }
 
     let (vertices, tris) = GpuState::prepare_geometry(&model.triangulation, rect);
-    model.gpu.upload_mesh(
-        device,
-        queue,
-        &vertices,
-        &tris,
-        Some(&fem_mesh.node_density),
-    );
+    model
+        .gpu
+        .upload_mesh(device, queue, &vertices, &tris, Some(&sol));
 
     model.ui.update(&mut model.params, model.k_matrix.as_ref());
 }

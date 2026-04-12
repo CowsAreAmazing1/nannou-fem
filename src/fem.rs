@@ -1,6 +1,11 @@
+use argmin::{
+    core::{Executor, Operator, State},
+    solver::conjugategradient::ConjugateGradient,
+};
+use nalgebra::DVector;
 use nannou::prelude::*;
 use spade::{ConstrainedDelaunayTriangulation, HasPosition, Triangulation};
-use std::collections::HashMap;
+use sprs::{CsMat, TriMat};
 
 pub struct Body {
     generator: Box<dyn Fn(f32) -> Vec2>,
@@ -163,8 +168,8 @@ impl FemMesh {
             positions,
             elements,
             is_boundary,
-            element_density: vec![],
-            node_density: vec![],
+            element_density: Vec::new(),
+            node_density: Vec::new(),
         }
     }
 
@@ -193,11 +198,7 @@ impl FemMesh {
             })
             .collect();
 
-        self.node_density = self.compute_node_values_from_elements();
-    }
-
-    /// Computes node density values by averaging the densities of its connecting elements.
-    fn compute_node_values_from_elements(&self) -> Vec<f32> {
+        // Computes node density values by averaging the densities of its connecting elements.
         let mut node_rho = vec![0.0; self.positions.len()];
         let mut node_count = vec![0; self.positions.len()];
 
@@ -214,24 +215,114 @@ impl FemMesh {
             }
         }
 
-        node_rho
+        self.node_density = node_rho;
     }
+}
 
-    pub fn setup_system(&self) -> (HashMap<(usize, usize), f32>, Vec<f32>) {
-        let n = self.positions.len();
-        let mut k_global = HashMap::<(usize, usize), f32>::new();
-        let mut f_global = vec![0.0f32; n];
+pub struct LinearSystem {
+    k: CsMat<f32>,   // pub k: HashMap<(usize, usize), f32>,
+    f: DVector<f32>, // f: Vec<f32>,
+}
 
-        for (e_id, &[n0, n1, n2]) in self.elements.iter().enumerate() {
-            let p0 = self.positions[n0];
-            let p1 = self.positions[n1];
-            let p2 = self.positions[n2];
+impl Operator for LinearSystem {
+    type Param = DVector<f32>;
+
+    type Output = DVector<f32>;
+
+    fn apply(&self, param: &Self::Param) -> Result<Self::Output, argmin::core::Error> {
+        let mut y = DVector::<f32>::zeros(param.len());
+
+        // CSR: outer_iterator() yields rows
+        for (row, row_vec) in self.k.outer_iterator().enumerate() {
+            let mut acc = 0.0f32;
+            for (col, val) in row_vec.iter() {
+                acc += val * param[col];
+            }
+            y[row] = acc;
+        }
+
+        Ok(y)
+    }
+}
+
+impl LinearSystem {
+    // pub fn from_mesh(mesh: &FemMesh) -> Self {
+    //     let n = mesh.positions.len();
+    //     let mut k_trip = TriMat::<f32>::with_capacity((n, n), mesh.elements.len() * 9);
+    //     let mut f = vec![0.0f32; n];
+
+    //     for (e_id, &[n0, n1, n2]) in mesh.elements.iter().enumerate() {
+    //         let p0 = mesh.positions[n0];
+    //         let p1 = mesh.positions[n1];
+    //         let p2 = mesh.positions[n2];
+
+    //         let two_a = (p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y);
+    //         let a = 0.5 * two_a.abs();
+    //         // if a <= 1e-12 {
+    //         //     continue;
+    //         // }
+
+    //         let b = [p1.y - p2.y, p2.y - p0.y, p0.y - p1.y];
+    //         let c = [p2.x - p1.x, p0.x - p2.x, p1.x - p0.x];
+
+    //         let mut k_local = [[0.0f32; 3]; 3];
+    //         for i in 0..3 {
+    //             for j in 0..3 {
+    //                 k_local[i][j] = (b[i] * b[j] + c[i] * c[j]) / (4.0 * a);
+    //             }
+    //         }
+
+    //         let rho_e = mesh.element_density[e_id];
+    //         let fe_i = rho_e * a / 3.0;
+
+    //         let nodes = [n0, n1, n2];
+    //         for (li, &gi) in nodes.iter().enumerate() {
+    //             f[gi] += fe_i;
+
+    //             for (lj, &gj) in nodes.iter().enumerate() {
+    //                 k_trip.add_triplet(gi, gj, k_local[li][lj]);
+    //             }
+    //         }
+    //     }
+
+    //     let k = k_trip.to_csr();
+    //     let f = DVector::from_vec(f);
+
+    //     LinearSystem { k, f }
+    // }
+
+    /// Assembles `Kx=f` with Dirichlet constraints applied directly during
+    /// assembly. `dirichlet_values[i] = Some(value)` marks node `i` fixed.
+    pub fn from_mesh(mesh: &FemMesh, dirichlet_values: &[Option<f32>]) -> Self {
+        let n = mesh.positions.len();
+        assert_eq!(
+            dirichlet_values.len(),
+            n,
+            "dirichlet_values length must match node count"
+        );
+
+        let mut is_fixed = vec![false; n];
+        let mut fixed_value = vec![0.0f32; n];
+        for (i, val) in dirichlet_values.iter().enumerate() {
+            if let Some(v) = val {
+                is_fixed[i] = true;
+                fixed_value[i] = *v;
+            }
+        }
+
+        let mut k_trip = TriMat::<f32>::with_capacity((n, n), mesh.elements.len() * 9 + n);
+        let mut f = vec![0.0f32; n];
+
+        for (e_id, &[n0, n1, n2]) in mesh.elements.iter().enumerate() {
+            let p0 = mesh.positions[n0];
+            let p1 = mesh.positions[n1];
+            let p2 = mesh.positions[n2];
 
             let two_a = (p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y);
             let a = 0.5 * two_a.abs();
-            // if a <= 1e-12 {
-            //     continue;
-            // }
+            if a <= 1.0e-12 {
+                continue;
+            }
 
             let b = [p1.y - p2.y, p2.y - p0.y, p0.y - p1.y];
             let c = [p2.x - p1.x, p0.x - p2.x, p1.x - p0.x];
@@ -243,18 +334,64 @@ impl FemMesh {
                 }
             }
 
-            let rho_e = self.element_density[e_id];
+            let rho_e = mesh.element_density.get(e_id).copied().unwrap_or(0.0);
             let fe_i = rho_e * a / 3.0;
 
-            for (li, gi) in (0..3).zip([n0, n1, n2]) {
-                f_global[gi] += fe_i;
+            let nodes = [n0, n1, n2];
 
-                for (lj, gj) in (0..3).zip([n0, n1, n2]) {
-                    *k_global.entry((gi, gj)).or_insert(0.0) += k_local[li][lj];
+            for &gi in &nodes {
+                if !is_fixed[gi] {
+                    f[gi] += fe_i;
+                }
+            }
+
+            for (li, &gi) in nodes.iter().enumerate() {
+                if is_fixed[gi] {
+                    continue;
+                }
+
+                for (lj, &gj) in nodes.iter().enumerate() {
+                    let kij = k_local[li][lj];
+                    if is_fixed[gj] {
+                        // Move known Dirichlet contribution to the RHS.
+                        f[gi] -= kij * fixed_value[gj];
+                    } else {
+                        k_trip.add_triplet(gi, gj, kij);
+                    }
                 }
             }
         }
 
-        (k_global, f_global)
+        // Replace fixed rows with x_i = g_i.
+        for i in 0..n {
+            if is_fixed[i] {
+                k_trip.add_triplet(i, i, 1.0);
+                f[i] = fixed_value[i];
+            }
+        }
+
+        let k = k_trip.to_csr();
+        let f = DVector::from_vec(f);
+
+        LinearSystem { k, f }
+    }
+
+    pub fn solve(self) -> DVector<f32> {
+        let b = self.f.clone();
+        let x0 = DVector::<f32>::zeros(b.len());
+
+        let solver: ConjugateGradient<DVector<f32>, f32> = ConjugateGradient::new(b);
+        let res = Executor::new(self, solver)
+            .configure(|state| state.param(x0).max_iters(1_000))
+            .run()
+            .unwrap();
+
+        let best_x = res.state().get_best_param().unwrap();
+        // println!("{:?}", best_x);
+
+        println!("{}", res.state().get_termination_status());
+        println!("{}", res.state().get_best_cost());
+
+        best_x.clone()
     }
 }
