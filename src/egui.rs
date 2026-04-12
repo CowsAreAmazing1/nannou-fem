@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use nannou_egui::color_picker::color_edit_button_rgb;
 use nannou_egui::{self, Egui, egui};
 
 use nannou_egui::egui::{Label, Response, RichText, Slider, Style, Ui, Widget};
@@ -183,6 +184,13 @@ impl UiState {
                     .logarithmic(true)
                     .text("Contour Steps"),
             );
+
+            ui.horizontal(|ui| {
+                color_edit_button_rgb(ui, &mut params.colors[0]);
+                color_edit_button_rgb(ui, &mut params.colors[1]);
+                color_edit_button_rgb(ui, &mut params.colors[2]);
+                color_edit_button_rgb(ui, &mut params.colors[3]);
+            });
         });
 
         if let Some(k_matrix) = k_matrix {

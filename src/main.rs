@@ -65,6 +65,7 @@ struct Params {
 
     contour_steps: u32,
     show_contours: bool,
+    colors: [[f32; 3]; 4],
 }
 
 impl Default for Params {
@@ -75,12 +76,21 @@ impl Default for Params {
             max_allowed_area: 800.0,
             angle_limit: 30.0,
             refinement_success: None,
+
             num_vertices: None,
             draw_triangulation: false,
+
             solution_success: None,
             solution_steps: 100,
+
             contour_steps: 12,
             show_contours: true,
+            colors: [
+                [0.05, 0.08, 0.45],
+                [0.05, 0.70, 0.95],
+                [0.95, 0.85, 0.15],
+                [0.85, 0.15, 0.10],
+            ],
         }
     }
 }
@@ -179,6 +189,7 @@ fn model(app: &App) -> Model {
         Some(fem_mesh.node_density),
     );
     gpu.upload_render_settings(queue, params.contour_steps, params.show_contours);
+    gpu.upload_color_map(queue, params.colors);
 
     println!(
         "Triangulation has {} vertices and {} faces",
@@ -308,6 +319,7 @@ fn update(app: &App, model: &mut Model, _update: Update) {
         model.params.contour_steps,
         model.params.show_contours,
     );
+    model.gpu.upload_color_map(queue, model.params.colors);
 
     model.ui.update(&mut model.params, model.k_matrix.as_ref());
 }

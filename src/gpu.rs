@@ -1,6 +1,38 @@
 use nannou::prelude::*;
 use spade::{ConstrainedDelaunayTriangulation, HasPosition, Triangulation};
 
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ColorMapUniform {
+    colors: [[f32; 4]; 4],
+}
+
+impl Default for ColorMapUniform {
+    fn default() -> Self {
+        Self {
+            colors: [
+                [0.0, 0.0, 0.6, 1.0],
+                [0.0, 0.9, 1.0, 1.0],
+                [1.0, 0.9, 0.1, 1.0],
+                [0.9, 0.1, 0.0, 1.0],
+            ],
+        }
+    }
+}
+
+impl ColorMapUniform {
+    fn from_rgb(colors: [[f32; 3]; 4]) -> Self {
+        Self {
+            colors: [
+                [colors[0][0], colors[0][1], colors[0][2], 1.0],
+                [colors[1][0], colors[1][1], colors[1][2], 1.0],
+                [colors[2][0], colors[2][1], colors[2][2], 1.0],
+                [colors[3][0], colors[3][1], colors[3][2], 1.0],
+            ],
+        }
+    }
+}
+
 pub struct GpuState {
     pub render_pipeline: wgpu::RenderPipeline,
     // uniform_buffer: wgpu::Buffer,
@@ -8,6 +40,7 @@ pub struct GpuState {
     pub tri_buffer: wgpu::Buffer,
     pub values_buffer: wgpu::Buffer,
     pub render_settings_buffer: wgpu::Buffer,
+    pub color_map_buffer: wgpu::Buffer,
     pub bind_group: wgpu::BindGroup,
     bind_group_layout: wgpu::BindGroupLayout,
     vertex_capacity: usize,
@@ -59,6 +92,10 @@ impl GpuState {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: self.render_settings_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.color_map_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -138,6 +175,11 @@ impl GpuState {
             0,
             bytemuck::cast_slice(&settings),
         );
+    }
+
+    pub fn upload_color_map(&self, queue: &wgpu::Queue, colors: [[f32; 3]; 4]) {
+        let uniform = ColorMapUniform::from_rgb(colors);
+        queue.write_buffer(&self.color_map_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
     pub fn prepare_geometry<V>(
@@ -246,6 +288,13 @@ impl GpuState {
         let render_settings_buffer =
             Self::create_storage_buffer::<u32>(device, "Render Settings Buffer", 2);
 
+        let color_map_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Color Map Uniform Buffer"),
+            size: std::mem::size_of::<ColorMapUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Render Bind Group Layout"),
             entries: &[
@@ -300,6 +349,16 @@ impl GpuState {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -326,6 +385,10 @@ impl GpuState {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: render_settings_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: color_map_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -378,6 +441,7 @@ impl GpuState {
             tri_buffer,
             values_buffer,
             render_settings_buffer,
+            color_map_buffer,
             bind_group,
             bind_group_layout,
             render_pipeline,
@@ -387,6 +451,12 @@ impl GpuState {
         };
 
         state.upload_mesh(device, queue, &vertices, &tris, Some(&values));
+        let default_colors = ColorMapUniform::default();
+        queue.write_buffer(
+            &state.color_map_buffer,
+            0,
+            bytemuck::bytes_of(&default_colors),
+        );
 
         state
     }
