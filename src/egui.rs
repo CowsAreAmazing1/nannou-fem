@@ -151,6 +151,32 @@ impl UiState {
 
             ui.separator();
 
+            ui.add(
+                egui::Slider::new(&mut params.solution_steps, 1..=10_000)
+                    .logarithmic(true)
+                    .text("Solution Steps"),
+            );
+
+            let text = if let Some(success) = params.solution_success {
+                if success {
+                    "Solution successful!"
+                } else {
+                    "Solution failed."
+                }
+            } else {
+                "Solution not yet attempted."
+            };
+            let color = if let Some(success) = params.solution_success {
+                if success {
+                    egui::Color32::GREEN
+                } else {
+                    egui::Color32::RED
+                }
+            } else {
+                egui::Color32::YELLOW
+            };
+            ui.label(RichText::new(text).color(color));
+
             ui.checkbox(&mut params.show_contours, "Show Contours");
             ui.add(
                 egui::Slider::new(&mut params.contour_steps, 2..=100)

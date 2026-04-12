@@ -376,23 +376,25 @@ impl LinearSystem {
         LinearSystem { k, f }
     }
 
-    pub fn solve(self) -> DVector<f32> {
+    pub fn solve(self, max_iters: u64) -> (DVector<f32>, bool) {
         let b = self.f.clone();
         let x0 = DVector::<f32>::zeros(b.len());
 
         let solver: ConjugateGradient<DVector<f32>, f32> = ConjugateGradient::new(b);
         let res = Executor::new(self, solver)
-            .configure(|state| state.param(x0).max_iters(100))
+            .configure(|state| state.param(x0).max_iters(max_iters))
             .run()
             .unwrap();
 
-        res.state().get_best_param().unwrap().clone()
+        let best_x = res.state().get_best_param().unwrap();
+        let termination_status = res.state().get_termination_status().terminated();
+
+        (best_x.clone(), termination_status)
 
         // // Cost function value associated with best parameter vector
         // let best_cost = res.state().get_best_cost();
 
         // // Check the execution status
-        // let termination_status = res.state().get_termination_status();
 
         // // Optionally, check why the optimizer terminated (if status is terminated)
         // let termination_reason = res.state().get_termination_reason();

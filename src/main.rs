@@ -50,31 +50,37 @@ impl HasPosition for Vertex {
 }
 
 struct Params {
+    shape_parameters: [f32; 6], // [polygon resolution, outer radius, inner radius, omega, spin speed, spacing]
+
     max_additional_vertices: usize,
     max_allowed_area: f32,
     angle_limit: f64,
+    refinement_success: Option<bool>,
 
+    num_vertices: Option<usize>,
     draw_triangulation: bool,
-    shape_parameters: [f32; 6], // [polygon resolution, outer radius, inner radius, omega, spin speed, spacing]
+
+    solution_success: Option<bool>,
+    solution_steps: u64,
+
     contour_steps: u32,
     show_contours: bool,
-
-    refinement_success: Option<bool>,
-    num_vertices: Option<usize>,
 }
 
 impl Default for Params {
     fn default() -> Self {
         Self {
-            max_additional_vertices: 10_000,
-            max_allowed_area: 10_000.0,
-            angle_limit: 30.0,
-            draw_triangulation: false,
             shape_parameters: [100.0, 200.0, 0.5, 4.0, 1.0, 500.0],
-            contour_steps: 12,
-            show_contours: true,
+            max_additional_vertices: 10_000,
+            max_allowed_area: 800.0,
+            angle_limit: 30.0,
             refinement_success: None,
             num_vertices: None,
+            draw_triangulation: false,
+            solution_success: None,
+            solution_steps: 100,
+            contour_steps: 12,
+            show_contours: true,
         }
     }
 }
@@ -278,8 +284,9 @@ fn update(app: &App, model: &mut Model, _update: Update) {
 
     // Build and solve a linear system
     let ls = LinearSystem::from_mesh(&fem_mesh, &dirichlet_values);
-    let solution = LinearSystem::solve(ls);
+    let (solution, solution_success) = LinearSystem::solve(ls, model.params.solution_steps);
     // model.k_matrix = Some(ls.k);
+    model.params.solution_success = Some(solution_success);
 
     let mut sol = solution.as_slice().to_vec();
     let (mut mn, mut mx) = (f32::INFINITY, f32::NEG_INFINITY);
