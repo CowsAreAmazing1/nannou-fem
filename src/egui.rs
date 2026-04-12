@@ -147,7 +147,16 @@ impl UiState {
 
             ui.separator();
 
-            ui.checkbox(&mut params.draw_triangulation, "Draw Triangulation")
+            ui.checkbox(&mut params.draw_triangulation, "Draw Triangulation");
+
+            ui.separator();
+
+            ui.checkbox(&mut params.show_contours, "Show Contours");
+            ui.add(
+                egui::Slider::new(&mut params.contour_steps, 2..=100)
+                    .logarithmic(true)
+                    .text("Contour Steps"),
+            );
         });
 
         if let Some(k_matrix) = k_matrix {

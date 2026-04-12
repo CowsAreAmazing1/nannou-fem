@@ -382,16 +382,31 @@ impl LinearSystem {
 
         let solver: ConjugateGradient<DVector<f32>, f32> = ConjugateGradient::new(b);
         let res = Executor::new(self, solver)
-            .configure(|state| state.param(x0).max_iters(1_000))
+            .configure(|state| state.param(x0).max_iters(100))
             .run()
             .unwrap();
 
-        let best_x = res.state().get_best_param().unwrap();
-        // println!("{:?}", best_x);
+        res.state().get_best_param().unwrap().clone()
 
-        println!("{}", res.state().get_termination_status());
-        println!("{}", res.state().get_best_cost());
+        // // Cost function value associated with best parameter vector
+        // let best_cost = res.state().get_best_cost();
 
-        best_x.clone()
+        // // Check the execution status
+        // let termination_status = res.state().get_termination_status();
+
+        // // Optionally, check why the optimizer terminated (if status is terminated)
+        // let termination_reason = res.state().get_termination_reason();
+
+        // // Time needed for optimization
+        // let time_needed = res.state().get_time().unwrap();
+
+        // // Total number of iterations needed
+        // let num_iterations = res.state().get_iter();
+
+        // // Iteration number where the last best parameter vector was found
+        // let num_iterations_best = res.state().get_last_best_iter();
+
+        // // Number of evaluation counts per method (Cost, Gradient)
+        // let function_evaluation_counts = res.state().get_func_counts();
     }
 }

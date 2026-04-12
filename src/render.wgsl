@@ -7,6 +7,9 @@ var<storage, read> indices: array<u32>;
 @group(0) @binding(2)
 var<storage, read> values: array<f32>;
 
+@group(0) @binding(3)
+var<storage, read> render_settings: array<u32>;
+
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) value: f32,
@@ -24,6 +27,15 @@ fn color_map(t_in: f32) -> vec3<f32> {
     let c2 = mix(c1, b3, smoothstep(0.33, 0.66, t));
     let c3 = mix(c2, b4, smoothstep(0.66, 1.0, t));
     return c3;
+}
+
+fn apply_contours(t_in: f32, steps: u32, enabled: bool) -> f32 {
+    if !enabled || steps < 2u {
+        return t_in;
+    }
+
+    let n = f32(steps - 1u);
+    return round(clamp(t_in, 0.0, 1.0) * n) / n;
 }
 
 @vertex
@@ -45,7 +57,9 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // in.value is barycentrically interpolated from the 3 triangle vertices
-    let rgb = color_map(in.value);
+    let steps = render_settings[0];
+    let enabled = render_settings[1] != 0u;
+    let t = apply_contours(in.value, steps, enabled);
+    let rgb = color_map(t);
     return vec4<f32>(rgb, 1.0);
 }

@@ -56,6 +56,8 @@ struct Params {
 
     draw_triangulation: bool,
     shape_parameters: [f32; 6], // [polygon resolution, outer radius, inner radius, omega, spin speed, spacing]
+    contour_steps: u32,
+    show_contours: bool,
 
     refinement_success: Option<bool>,
     num_vertices: Option<usize>,
@@ -69,6 +71,8 @@ impl Default for Params {
             angle_limit: 30.0,
             draw_triangulation: false,
             shape_parameters: [100.0, 200.0, 0.5, 4.0, 1.0, 500.0],
+            contour_steps: 12,
+            show_contours: true,
             refinement_success: None,
             num_vertices: None,
         }
@@ -134,6 +138,8 @@ fn model(app: &App) -> Model {
     let half_w = w * 0.5;
     let half_h = h * 0.5;
 
+    let params = Params::default();
+
     const N: usize = 100;
 
     let bodies = [
@@ -166,6 +172,7 @@ fn model(app: &App) -> Model {
         window.rect(),
         Some(fem_mesh.node_density),
     );
+    gpu.upload_render_settings(queue, params.contour_steps, params.show_contours);
 
     println!(
         "Triangulation has {} vertices and {} faces",
@@ -191,8 +198,6 @@ fn model(app: &App) -> Model {
 
     let egui = Egui::from_window(&window);
     let ui = UiState::new(egui);
-
-    let params = Params::default();
 
     Model {
         triangulation,
@@ -291,6 +296,11 @@ fn update(app: &App, model: &mut Model, _update: Update) {
     model
         .gpu
         .upload_mesh(device, queue, &vertices, &tris, Some(&sol));
+    model.gpu.upload_render_settings(
+        queue,
+        model.params.contour_steps,
+        model.params.show_contours,
+    );
 
     model.ui.update(&mut model.params, model.k_matrix.as_ref());
 }

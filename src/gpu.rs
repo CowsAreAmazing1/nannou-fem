@@ -7,6 +7,7 @@ pub struct GpuState {
     pub vertex_buffer: wgpu::Buffer,
     pub tri_buffer: wgpu::Buffer,
     pub values_buffer: wgpu::Buffer,
+    pub render_settings_buffer: wgpu::Buffer,
     pub bind_group: wgpu::BindGroup,
     bind_group_layout: wgpu::BindGroupLayout,
     vertex_capacity: usize,
@@ -54,6 +55,10 @@ impl GpuState {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: self.values_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.render_settings_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -124,6 +129,15 @@ impl GpuState {
         {
             queue.write_buffer(&self.values_buffer, 0, bytemuck::cast_slice(values));
         }
+    }
+
+    pub fn upload_render_settings(&self, queue: &wgpu::Queue, contour_steps: u32, enabled: bool) {
+        let settings = [contour_steps.max(1), if enabled { 1 } else { 0 }];
+        queue.write_buffer(
+            &self.render_settings_buffer,
+            0,
+            bytemuck::cast_slice(&settings),
+        );
     }
 
     pub fn prepare_geometry<V>(
@@ -229,6 +243,9 @@ impl GpuState {
         let values_buffer =
             Self::create_storage_buffer::<f32>(device, "Values Storage Buffer", values_capacity);
 
+        let render_settings_buffer =
+            Self::create_storage_buffer::<u32>(device, "Render Settings Buffer", 2);
+
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Render Bind Group Layout"),
             entries: &[
@@ -273,6 +290,16 @@ impl GpuState {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -295,6 +322,10 @@ impl GpuState {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: values_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: render_settings_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -346,6 +377,7 @@ impl GpuState {
             vertex_buffer,
             tri_buffer,
             values_buffer,
+            render_settings_buffer,
             bind_group,
             bind_group_layout,
             render_pipeline,
