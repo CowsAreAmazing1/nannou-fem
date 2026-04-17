@@ -10,22 +10,25 @@ use sprs::{CsMat, TriMat};
 pub struct Body {
     generator: Box<dyn Fn(f32) -> Vec2>,
     density: f32,
+    resolution: usize,
 }
 
 impl Body {
-    pub fn new(density: f32, generator: impl Fn(f32) -> Vec2 + 'static) -> Self {
+    pub fn new(density: f32, resolution: usize, generator: impl Fn(f32) -> Vec2 + 'static) -> Self {
         Self {
             generator: Box::new(generator),
             density,
+            resolution,
         }
     }
 
-    pub fn sample_boundary<const N: usize>(&self) -> [Vec2; N] {
-        std::array::from_fn(|i| {
-            // Keep samples on [0, 1) so first/last vertices are distinct.
-            let t = i as f32 / N as f32;
-            (self.generator)(t)
-        })
+    pub fn sample_boundary(&self) -> Vec<Vec2> {
+        (0..self.resolution)
+            .map(|i| {
+                let t = i as f32 / self.resolution as f32;
+                (self.generator)(t)
+            })
+            .collect()
     }
 }
 
@@ -105,9 +108,9 @@ pub struct FemMesh {
 
 impl FemMesh {
     /// Converts a `ConstrainedDelaunayTriangulation` to a `FemMesh`, an easy-to-use format for finite element assembly and solving. The `is_boundary` field is determined by checking if each vertex lies on any of the constrained loops.
-    pub fn build_mesh<V, const N: usize>(
+    pub fn build_mesh<V>(
         triangulation: &ConstrainedDelaunayTriangulation<V>,
-        constrained_loops: &Vec<[Vec2; N]>,
+        constrained_loops: &Vec<Vec<Vec2>>,
     ) -> FemMesh
     where
         V: HasPosition<Scalar = f32>,
@@ -170,7 +173,7 @@ impl FemMesh {
     }
 
     /// Computes element and node densities from body loops and their densities.
-    pub fn compute_density<const N: usize>(&mut self, body_loops: &[[Vec2; N]], bodies: &[Body]) {
+    pub fn compute_density(&mut self, body_loops: &[Vec<Vec2>], bodies: &[Body]) {
         self.element_density = self
             .elements
             .iter()

@@ -59,7 +59,7 @@ enum Visual {
 struct Params {
     visual: Visual,
 
-    shape_parameters: [f32; 6], // [polygon resolution, outer radius, inner radius, omega, spin speed, spacing]
+    shape_parameters: [f32; 6], // [resolution, outer radius, inner radius, omega, spin speed, spacing]
 
     max_additional_vertices: usize,
     max_allowed_area: f32,
@@ -115,8 +115,8 @@ struct Model {
 }
 
 /// Sets up a constrained Delaunay triangulation, with the given vertices constrained in a closed loop, then refines. Returns the triangulation, and a boolean indicating whether the refinement finished without running out of vertices.
-fn setup_triangulation<const N: usize>(
-    to_constrain: &Vec<[Vec2; N]>,
+fn setup_triangulation(
+    to_constrain: &Vec<Vec<Vec2>>,
     half_width: f32,
     half_height: f32,
     refinement_params: Option<spade::RefinementParameters<f32>>,
@@ -168,22 +168,20 @@ fn model(app: &App) -> Model {
 
     let params = Params::default();
 
-    const N: usize = 100;
-
     let bodies = [
-        Body::new(1.0, |t| {
+        Body::new(1.0, 100, |t| {
             let angle = t * TAU;
             let rad = 200.0 * (1.0 + 0.5 * (4.0 * angle).sin());
             vec2(rad * angle.cos() - 300.0, rad * angle.sin())
         }),
-        Body::new(1.0, |t| {
+        Body::new(1.0, 100, |t| {
             let angle = t * TAU;
             let rad = 200.0 * (1.0 + 0.5 * (4.0 * angle).sin());
             vec2(rad * angle.cos() + 300.0, rad * angle.sin())
         }),
     ];
 
-    let constrained_loops = bodies.iter().map(|b| b.sample_boundary::<N>()).collect();
+    let constrained_loops = bodies.iter().map(|b| b.sample_boundary()).collect();
 
     let (triangulation, _) = setup_triangulation(&constrained_loops, half_w, half_h, None);
 
@@ -290,7 +288,7 @@ fn update(app: &App, model: &mut Model, _update: Update) {
     let half_h = h * 0.5;
 
     // Build polygons
-    // let resolution = model.params.shape_parameters[0] as usize;
+    let resolution = model.params.shape_parameters[0] as usize;
     let radius_outer = model.params.shape_parameters[1];
     let radius_inner = model.params.shape_parameters[2];
     let omega = model.params.shape_parameters[3];
@@ -299,13 +297,13 @@ fn update(app: &App, model: &mut Model, _update: Update) {
     let time = app.time;
 
     let bodies = [
-        Body::new(1.0, move |t| {
+        Body::new(1.0, resolution, move |t| {
             let angle = t * TAU;
             let rad =
                 radius_outer * (1.0 + radius_inner * (omega * (angle + spin_speed * time)).sin());
             vec2(rad * angle.cos() - spacing, rad * angle.sin())
         }),
-        Body::new(1.0, move |t| {
+        Body::new(1.0, resolution, move |t| {
             let angle = t * TAU;
             let rad = radius_outer * (1.0 + radius_inner * (omega * angle).sin());
             vec2(
@@ -322,8 +320,7 @@ fn update(app: &App, model: &mut Model, _update: Update) {
         // }),
     ];
 
-    const N: usize = 100;
-    let constrained_loops = bodies.iter().map(|b| b.sample_boundary::<N>()).collect();
+    let constrained_loops = bodies.iter().map(|b| b.sample_boundary()).collect();
 
     // Triangulate and refine
     let params = spade::RefinementParameters::default()
