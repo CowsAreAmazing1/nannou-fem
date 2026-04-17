@@ -2,6 +2,7 @@
 name = "fem"
 version = "0.1.0"
 edition = "2024"
+default-run = "fem"
 
 [dependencies]
 argmin = "0.11.0"

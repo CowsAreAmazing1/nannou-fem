@@ -4,6 +4,8 @@ use egui_plot::{Line, Plot};
 use nannou_egui::color_picker::color_edit_button_rgb;
 use nannou_egui::{Egui, egui};
 
+use crate::app::{Params, SolveMode, Visual};
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MatrixColorMode {
     Density,
@@ -76,37 +78,25 @@ impl UiState {
         self.ui.handle_raw_event(event);
     }
 
-    pub fn update(
-        &mut self,
-        params: &mut crate::Params,
-        k_matrix: Option<&HashMap<(usize, usize), f32>>,
-    ) {
+    pub fn update(&mut self, params: &mut Params, k_matrix: Option<&HashMap<(usize, usize), f32>>) {
         let (ui_state, matrix_color_mode) = (&mut self.ui, &mut self.matrix_color_mode);
         let ctx = ui_state.begin_frame();
         egui::Window::new("Controls").show(&ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Visual:");
-                ui.selectable_value(&mut params.visual, crate::Visual::Density, "Density");
-                ui.selectable_value(&mut params.visual, crate::Visual::Potential, "Potential");
-                ui.selectable_value(
-                    &mut params.visual,
-                    crate::Visual::Acceleration,
-                    "Acceleration",
-                );
+                ui.selectable_value(&mut params.visual, Visual::Density, "Density");
+                ui.selectable_value(&mut params.visual, Visual::Potential, "Potential");
+                ui.selectable_value(&mut params.visual, Visual::Acceleration, "Acceleration");
             });
 
             ui.horizontal(|ui| {
                 ui.label("Solver Mode:");
                 ui.selectable_value(
                     &mut params.solve_mode,
-                    crate::SolveMode::FullPerFrame,
+                    SolveMode::FullPerFrame,
                     "Full Per Frame",
                 );
-                ui.selectable_value(
-                    &mut params.solve_mode,
-                    crate::SolveMode::Iterative,
-                    "Iterative",
-                );
+                ui.selectable_value(&mut params.solve_mode, SolveMode::Iterative, "Iterative");
             });
 
             ui.separator();
@@ -178,7 +168,7 @@ impl UiState {
 
             ui.separator();
 
-            if params.solve_mode == crate::SolveMode::Iterative {
+            if params.solve_mode == SolveMode::Iterative {
                 ui.add(
                     egui::Slider::new(&mut params.iterative_steps_per_frame, 1..=10_000)
                         .logarithmic(true)

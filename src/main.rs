@@ -4,12 +4,10 @@ use nannou_egui::Egui;
 use spade::{ConstrainedDelaunayTriangulation, HasPosition, Point2, Triangulation};
 use std::collections::HashMap;
 
-use crate::egui::UiState;
-use crate::fem::{Body, FemMesh, LinearSystem};
-use crate::gpu::GpuState;
-mod egui;
-mod fem;
-mod gpu;
+use fem::app::{Params, SolveMode, Visual};
+use fem::egui::UiState;
+use fem::fem::{Body, FemMesh, LinearSystem};
+use fem::gpu::GpuState;
 
 // use crate::svg::read_svg;
 // mod svg;
@@ -51,19 +49,6 @@ impl HasPosition for Vertex {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Visual {
-    Density,
-    Potential,
-    Acceleration,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SolveMode {
-    FullPerFrame,
-    Iterative,
-}
-
 #[derive(Clone, Copy, PartialEq)]
 struct IterativeSignature {
     shape_parameters: [f32; 6],
@@ -82,66 +67,6 @@ struct IterativeSolveState {
     solution: DVector<f32>,
     total_iterations: u64,
     converged: bool,
-}
-
-struct Params {
-    visual: Visual,
-    solve_mode: SolveMode,
-
-    shape_parameters: [f32; 6], // [resolution, outer radius, inner radius, omega, spin speed, spacing]
-
-    max_additional_vertices: usize,
-    max_allowed_area: f32,
-    angle_limit: f64,
-    refinement_success: Option<bool>,
-
-    num_vertices: Option<usize>,
-    draw_triangulation: bool,
-
-    solution_success: Option<bool>,
-    solution_steps: u64,
-    iterative_steps_per_frame: u64,
-    iterative_total_steps: u64,
-    iterative_reset_requested: bool,
-    iterative_cost_data: Vec<(u32, f32)>, // (iteration, cost)
-
-    contour_steps: u32,
-    show_contours: bool,
-    colors: [[f32; 3]; 4],
-}
-
-impl Default for Params {
-    fn default() -> Self {
-        Self {
-            visual: Visual::Potential,
-            solve_mode: SolveMode::FullPerFrame,
-
-            shape_parameters: [100.0, 200.0, 0.5, 4.0, 1.0, 500.0],
-            max_additional_vertices: 10_000,
-            max_allowed_area: 800.0,
-            angle_limit: 30.0,
-            refinement_success: None,
-
-            num_vertices: None,
-            draw_triangulation: false,
-
-            solution_success: None,
-            solution_steps: 100,
-            iterative_steps_per_frame: 100,
-            iterative_total_steps: 0,
-            iterative_reset_requested: false,
-            iterative_cost_data: Vec::new(),
-
-            contour_steps: 12,
-            show_contours: true,
-            colors: [
-                [0.05, 0.08, 0.45],
-                [0.05, 0.70, 0.95],
-                [0.95, 0.85, 0.15],
-                [0.85, 0.15, 0.10],
-            ],
-        }
-    }
 }
 
 struct Model {
