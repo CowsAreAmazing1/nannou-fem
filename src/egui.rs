@@ -96,6 +96,20 @@ impl UiState {
                 );
             });
 
+            ui.horizontal(|ui| {
+                ui.label("Solver Mode:");
+                ui.selectable_value(
+                    &mut params.solve_mode,
+                    crate::SolveMode::FullPerFrame,
+                    "Full Per Frame",
+                );
+                ui.selectable_value(
+                    &mut params.solve_mode,
+                    crate::SolveMode::Iterative,
+                    "Iterative",
+                );
+            });
+
             ui.separator();
 
             ui.add(
@@ -165,11 +179,27 @@ impl UiState {
 
             ui.separator();
 
-            ui.add(
-                egui::Slider::new(&mut params.solution_steps, 1..=10_000)
-                    .logarithmic(true)
-                    .text("Solution Steps"),
-            );
+            if params.solve_mode == crate::SolveMode::Iterative {
+                ui.add(
+                    egui::Slider::new(&mut params.iterative_steps_per_frame, 1..=1_000)
+                        .logarithmic(true)
+                        .text("Iterative Steps / Frame"),
+                );
+                ui.label(format!(
+                    "Iterative total steps: {}",
+                    params.iterative_total_steps
+                ));
+                if ui.button("Reset Iterative Solve").clicked() {
+                    params.iterative_reset_requested = true;
+                    params.iterative_total_steps = 0;
+                }
+            } else {
+                ui.add(
+                    egui::Slider::new(&mut params.solution_steps, 1..=10_000)
+                        .logarithmic(true)
+                        .text("Full Solve Steps"),
+                );
+            }
 
             let text = if let Some(success) = params.solution_success {
                 if success {

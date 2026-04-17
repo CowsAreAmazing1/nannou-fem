@@ -1,3 +1,4 @@
+use nalgebra::DVector;
 use nannou::prelude::*;
 use nannou_egui::Egui;
 use spade::{ConstrainedDelaunayTriangulation, HasPosition, Point2, Triangulation};
@@ -23,6 +24,7 @@ fn main() {
 }
 
 /// Allowing Nannou Vec2s to be used as vertices in a triangulation
+#[derive(Clone)]
 struct Vertex {
     pos: Vec2,
 }
@@ -56,8 +58,35 @@ enum Visual {
     Acceleration,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SolveMode {
+    FullPerFrame,
+    Iterative,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct IterativeSignature {
+    shape_parameters: [f32; 6],
+    max_additional_vertices: usize,
+    max_allowed_area: f32,
+    angle_limit: f64,
+    half_w: f32,
+    half_h: f32,
+}
+
+struct IterativeSolveState {
+    signature: IterativeSignature,
+    triangulation: ConstrainedDelaunayTriangulation<Vertex>,
+    mesh: FemMesh,
+    linear_system: LinearSystem,
+    solution: DVector<f32>,
+    total_iterations: u64,
+    converged: bool,
+}
+
 struct Params {
     visual: Visual,
+    solve_mode: SolveMode,
 
     shape_parameters: [f32; 6], // [resolution, outer radius, inner radius, omega, spin speed, spacing]
 
@@ -71,6 +100,9 @@ struct Params {
 
     solution_success: Option<bool>,
     solution_steps: u64,
+    iterative_steps_per_frame: u64,
+    iterative_total_steps: u64,
+    iterative_reset_requested: bool,
 
     contour_steps: u32,
     show_contours: bool,
@@ -81,6 +113,7 @@ impl Default for Params {
     fn default() -> Self {
         Self {
             visual: Visual::Potential,
+            solve_mode: SolveMode::FullPerFrame,
 
             shape_parameters: [100.0, 200.0, 0.5, 4.0, 1.0, 500.0],
             max_additional_vertices: 10_000,
@@ -93,6 +126,9 @@ impl Default for Params {
 
             solution_success: None,
             solution_steps: 100,
+            iterative_steps_per_frame: 100,
+            iterative_total_steps: 0,
+            iterative_reset_requested: false,
 
             contour_steps: 12,
             show_contours: true,
@@ -111,6 +147,9 @@ struct Model {
     gpu: GpuState,
     ui: UiState,
     params: Params,
+    last_mode: SolveMode,
+    iterative_time_anchor: Option<f32>,
+    iterative_state: Option<IterativeSolveState>,
     k_matrix: Option<HashMap<(usize, usize), f32>>,
 }
 
@@ -220,6 +259,9 @@ fn model(app: &App) -> Model {
         triangulation,
         gpu,
         ui,
+        last_mode: params.solve_mode,
+        iterative_time_anchor: None,
+        iterative_state: None,
         params,
         k_matrix: None,
     }
@@ -277,6 +319,34 @@ fn node_acceleration_magnitude(mesh: &FemMesh, potential: &[f32]) -> Vec<f32> {
     node_acc.into_iter().map(|a| a.length()).collect()
 }
 
+fn build_frame_system(
+    constrained_loops: &Vec<Vec<Vec2>>,
+    bodies: &[Body],
+    half_w: f32,
+    half_h: f32,
+    params: &Params,
+) -> (
+    ConstrainedDelaunayTriangulation<Vertex>,
+    FemMesh,
+    LinearSystem,
+    bool,
+) {
+    let refinement_params = spade::RefinementParameters::default()
+        .with_max_additional_vertices(params.max_additional_vertices)
+        .with_max_allowed_area(params.max_allowed_area)
+        .with_angle_limit(spade::AngleLimit::from_deg(params.angle_limit));
+
+    let (triangulation, refinement_success) =
+        setup_triangulation(constrained_loops, half_w, half_h, Some(refinement_params));
+
+    let mut fem_mesh = FemMesh::build_mesh(&triangulation, constrained_loops);
+    fem_mesh.compute_density(constrained_loops, bodies);
+    fem_mesh.dirichlet_values(0.0, half_w, half_h);
+    let ls = LinearSystem::from_mesh(&fem_mesh);
+
+    (triangulation, fem_mesh, ls, refinement_success)
+}
+
 fn update(app: &App, model: &mut Model, _update: Update) {
     let window = app.main_window();
     let rect = window.rect();
@@ -287,29 +357,42 @@ fn update(app: &App, model: &mut Model, _update: Update) {
     let half_w = w * 0.5;
     let half_h = h * 0.5;
 
+    if model.params.solve_mode != model.last_mode {
+        model.iterative_state = None;
+        model.iterative_time_anchor = None;
+        model.params.iterative_total_steps = 0;
+        model.params.iterative_reset_requested = true;
+        model.params.solution_success = None;
+        model.last_mode = model.params.solve_mode;
+    }
+
+    if model.params.solve_mode == SolveMode::FullPerFrame {
+        model.iterative_state = None;
+        model.iterative_time_anchor = None;
+        model.params.iterative_total_steps = 0;
+    } else if model.params.iterative_reset_requested {
+        model.iterative_state = None;
+        model.iterative_time_anchor = Some(app.time);
+    }
+
     // Build polygons
     let resolution = model.params.shape_parameters[0] as usize;
     let radius_outer = model.params.shape_parameters[1];
     let radius_inner = model.params.shape_parameters[2];
     let omega = model.params.shape_parameters[3];
-    let spin_speed = model.params.shape_parameters[4];
+    let angle_offset = model.params.shape_parameters[4];
     let spacing = model.params.shape_parameters[5];
-    let time = app.time;
 
     let bodies = [
         Body::new(1.0, resolution, move |t| {
-            let angle = t * TAU;
-            let rad =
-                radius_outer * (1.0 + radius_inner * (omega * (angle + spin_speed * time)).sin());
+            let angle = t * TAU - angle_offset;
+            let rad = radius_outer * (1.0 + radius_inner * (omega * angle).cos());
             vec2(rad * angle.cos() - spacing, rad * angle.sin())
         }),
         Body::new(1.0, resolution, move |t| {
-            let angle = t * TAU;
-            let rad = radius_outer * (1.0 + radius_inner * (omega * angle).sin());
-            vec2(
-                rad * (angle - spin_speed * time).cos() + spacing,
-                rad * (angle - spin_speed * time).sin(),
-            )
+            let angle = t * TAU - angle_offset;
+            let rad = radius_outer * (1.0 + radius_inner * (omega * angle).cos());
+            vec2(rad * (angle).cos() + spacing, rad * (angle).sin())
         }),
         // Body::new(1.0, |t| {
         //     vec2(200.0 * (TAU * t).cos(), 200.0 * (TAU * t).sin())
@@ -322,54 +405,101 @@ fn update(app: &App, model: &mut Model, _update: Update) {
 
     let constrained_loops = bodies.iter().map(|b| b.sample_boundary()).collect();
 
-    // Triangulate and refine
-    let params = spade::RefinementParameters::default()
-        .with_max_additional_vertices(model.params.max_additional_vertices)
-        .with_max_allowed_area(model.params.max_allowed_area)
-        .with_angle_limit(spade::AngleLimit::from_deg(model.params.angle_limit));
+    let values = match model.params.solve_mode {
+        SolveMode::FullPerFrame => {
+            let (triangulation, fem_mesh, ls, refinement_success) =
+                build_frame_system(&constrained_loops, &bodies, half_w, half_h, &model.params);
 
-    let (triangulation, refinement_success) =
-        setup_triangulation(&constrained_loops, half_w, half_h, Some(params));
-    model.triangulation = triangulation;
-    model.params.refinement_success = Some(refinement_success);
-    model.params.num_vertices = Some(model.triangulation.vertices().count());
+            model.triangulation = triangulation;
+            model.params.refinement_success = Some(refinement_success);
+            model.params.num_vertices = Some(model.triangulation.vertices().count());
 
-    // Build a Mesh
-    let mut fem_mesh = FemMesh::build_mesh(&model.triangulation, &constrained_loops);
-    fem_mesh.compute_density(&constrained_loops, &bodies);
+            let (solution, solution_success, _) = ls.solve(model.params.solution_steps);
+            model.params.solution_success = Some(solution_success);
 
-    let mut dirichlet_values = vec![None; fem_mesh.positions.len()];
-    let eps = 1.0e-3;
-    for (i, &p) in fem_mesh.positions.iter().enumerate() {
-        let on_screen_edge = (p.x - -half_w).abs() < eps
-            || (p.x - half_w).abs() < eps
-            || (p.y - half_h).abs() < eps
-            || (p.y - -half_h).abs() < eps;
+            let sol = solution.as_slice().to_vec();
+            let acc = node_acceleration_magnitude(&fem_mesh, &sol);
 
-        if on_screen_edge {
-            dirichlet_values[i] = Some(0.0);
+            normalize_vec(match model.params.visual {
+                Visual::Density => fem_mesh.node_density,
+                Visual::Potential => sol,
+                Visual::Acceleration => acc,
+            })
         }
-    }
+        SolveMode::Iterative => {
+            let signature = IterativeSignature {
+                shape_parameters: model.params.shape_parameters,
+                max_additional_vertices: model.params.max_additional_vertices,
+                max_allowed_area: model.params.max_allowed_area,
+                angle_limit: model.params.angle_limit,
+                half_w,
+                half_h,
+            };
 
-    // Build and solve a linear system
-    let ls = LinearSystem::from_mesh(&fem_mesh, &dirichlet_values);
-    let (solution, solution_success) = LinearSystem::solve(ls, model.params.solution_steps);
-    // model.k_matrix = Some(ls.k);
-    model.params.solution_success = Some(solution_success);
+            let needs_rebuild = model.params.iterative_reset_requested
+                || model
+                    .iterative_state
+                    .as_ref()
+                    .map(|state| state.signature != signature)
+                    .unwrap_or(true);
 
-    let sol = solution.as_slice().to_vec();
-    let acc = node_acceleration_magnitude(&fem_mesh, &sol);
+            if needs_rebuild {
+                let (triangulation, mesh, ls, refinement_success) =
+                    build_frame_system(&constrained_loops, &bodies, half_w, half_h, &model.params);
 
-    let values = &normalize_vec(match model.params.visual {
-        Visual::Density => fem_mesh.node_density,
-        Visual::Potential => sol,
-        Visual::Acceleration => acc,
-    });
+                model.params.refinement_success = Some(refinement_success);
+                model.params.num_vertices = Some(triangulation.vertices().count());
+
+                model.iterative_state = Some(IterativeSolveState {
+                    signature,
+                    triangulation,
+                    mesh,
+                    linear_system: ls,
+                    solution: DVector::zeros(0),
+                    total_iterations: 0,
+                    converged: false,
+                });
+                model.params.iterative_reset_requested = false;
+            }
+
+            let state = model
+                .iterative_state
+                .as_mut()
+                .expect("iterative state must exist when in iterative mode");
+
+            if state.solution.is_empty() {
+                state.solution = DVector::zeros(state.mesh.positions.len());
+            }
+
+            if !state.converged {
+                let (next_solution, converged, step_iterations) =
+                    state.linear_system.solve_with_initial_guess(
+                        state.solution.clone(),
+                        model.params.iterative_steps_per_frame,
+                    );
+                state.solution = next_solution;
+                state.converged = converged;
+                state.total_iterations += step_iterations;
+            }
+
+            model.triangulation = state.triangulation.clone();
+            model.params.solution_success = Some(state.converged);
+            model.params.iterative_total_steps = state.total_iterations;
+
+            let sol = state.solution.as_slice().to_vec();
+            let acc = node_acceleration_magnitude(&state.mesh, &sol);
+            normalize_vec(match model.params.visual {
+                Visual::Density => state.mesh.node_density.clone(),
+                Visual::Potential => sol,
+                Visual::Acceleration => acc,
+            })
+        }
+    };
 
     let (vertices, tris) = GpuState::prepare_geometry(&model.triangulation, rect);
     model
         .gpu
-        .upload_mesh(device, queue, &vertices, &tris, Some(values));
+        .upload_mesh(device, queue, &vertices, &tris, Some(&values));
     model.gpu.upload_render_settings(
         queue,
         model.params.contour_steps,

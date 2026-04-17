@@ -1,5 +1,5 @@
 use argmin::{
-    core::{Executor, Operator, State},
+    core::{Executor, Operator, State, TerminationReason},
     solver::conjugategradient::ConjugateGradient,
 };
 use nalgebra::DVector;
@@ -14,6 +14,7 @@ pub struct Body {
 }
 
 impl Body {
+    // Builds a body from a parametric curve `generator` function that maps [0, 1] to `resolution` points on the boundary, and the shape's `density`
     pub fn new(density: f32, resolution: usize, generator: impl Fn(f32) -> Vec2 + 'static) -> Self {
         Self {
             generator: Box::new(generator),
@@ -104,6 +105,7 @@ pub struct FemMesh {
     pub is_boundary: Vec<bool>,
     pub element_density: Vec<f32>,
     pub node_density: Vec<f32>,
+    boundary_conditions: Vec<Option<f32>>,
 }
 
 impl FemMesh {
@@ -169,6 +171,7 @@ impl FemMesh {
             is_boundary,
             element_density: Vec::new(),
             node_density: Vec::new(),
+            boundary_conditions: Vec::new(),
         }
     }
 
@@ -216,11 +219,42 @@ impl FemMesh {
 
         self.node_density = node_rho;
     }
+
+    pub fn dirichlet_values(&mut self, bc_potential: f32, half_w: f32, half_h: f32) {
+        let eps = 1.0e-3;
+
+        self.boundary_conditions = self
+            .positions
+            .iter()
+            .map(|&p| {
+                let on_screen_edge = (p.x - -half_w).abs() < eps
+                    || (p.x - half_w).abs() < eps
+                    || (p.y - half_h).abs() < eps
+                    || (p.y - -half_h).abs() < eps;
+
+                if on_screen_edge {
+                    Some(bc_potential)
+                } else {
+                    None
+                }
+            })
+            .collect();
+    }
 }
 
+#[derive(Clone)]
 pub struct LinearSystem {
-    k: CsMat<f32>,   // pub k: HashMap<(usize, usize), f32>,
-    f: DVector<f32>, // f: Vec<f32>,
+    k: CsMat<f32>,
+    f: DVector<f32>,
+}
+
+impl Default for LinearSystem {
+    fn default() -> Self {
+        LinearSystem {
+            k: CsMat::empty(sprs::CompressedStorage::CSR, 0),
+            f: DVector::zeros(0),
+        }
+    }
 }
 
 impl Operator for LinearSystem {
@@ -245,14 +279,13 @@ impl Operator for LinearSystem {
 }
 
 impl LinearSystem {
-    /// Builds the system of equations `Kx = f` from a `FemMesh` with computed density values
-    /// and specified DIrichlet boundary conditions.
-    pub fn from_mesh(mesh: &FemMesh, dirichlet_values: &[Option<f32>]) -> Self {
+    /// Builds the system of equations `Kx = f` from a `FemMesh` with computed density values and boundary confitions
+    pub fn from_mesh(mesh: &FemMesh) -> Self {
         let n = mesh.positions.len();
 
         let mut is_fixed = vec![false; n];
         let mut fixed_value = vec![0.0f32; n];
-        for (i, val) in dirichlet_values.iter().enumerate() {
+        for (i, val) in mesh.boundary_conditions.iter().enumerate() {
             if let Some(v) = val {
                 is_fixed[i] = true;
                 fixed_value[i] = *v;
@@ -325,20 +358,26 @@ impl LinearSystem {
         LinearSystem { k, f }
     }
 
-    pub fn solve(self, max_iters: u64) -> (DVector<f32>, bool) {
+    pub fn solve_with_initial_guess(
+        &self,
+        x0: DVector<f32>,
+        max_iters: u64,
+    ) -> (DVector<f32>, bool, u64) {
         let b = self.f.clone();
-        let x0 = DVector::<f32>::zeros(b.len());
-
         let solver: ConjugateGradient<DVector<f32>, f32> = ConjugateGradient::new(b);
-        let res = Executor::new(self, solver)
+        let res = Executor::new(self.clone(), solver)
             .configure(|state| state.param(x0).max_iters(max_iters))
             .run()
             .unwrap();
 
         let best_x = res.state().get_best_param().unwrap();
-        let termination_status = res.state().get_termination_status().terminated();
+        let converged = matches!(
+            res.state().get_termination_reason(),
+            Some(TerminationReason::TargetCostReached | TerminationReason::SolverConverged)
+        );
+        let iterations = res.state().get_iter();
 
-        (best_x.clone(), termination_status)
+        (best_x.clone(), converged, iterations)
 
         // // Cost function value associated with best parameter vector
         // let best_cost = res.state().get_best_cost();
@@ -359,5 +398,10 @@ impl LinearSystem {
 
         // // Number of evaluation counts per method (Cost, Gradient)
         // let function_evaluation_counts = res.state().get_func_counts();
+    }
+
+    pub fn solve(&self, max_iters: u64) -> (DVector<f32>, bool, u64) {
+        let x0 = DVector::<f32>::zeros(self.f.len());
+        self.solve_with_initial_guess(x0, max_iters)
     }
 }
