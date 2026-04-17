@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use argmin::{
     core::{Executor, Operator, State, TerminationReason},
     solver::conjugategradient::ConjugateGradient,
@@ -362,11 +364,12 @@ impl LinearSystem {
         &self,
         x0: DVector<f32>,
         max_iters: u64,
-    ) -> (DVector<f32>, bool, u64) {
+    ) -> (DVector<f32>, bool, u64, f32) {
         let b = self.f.clone();
         let solver: ConjugateGradient<DVector<f32>, f32> = ConjugateGradient::new(b);
         let res = Executor::new(self.clone(), solver)
             .configure(|state| state.param(x0).max_iters(max_iters))
+            .timeout(Duration::from_millis(16))
             .run()
             .unwrap();
 
@@ -376,8 +379,9 @@ impl LinearSystem {
             Some(TerminationReason::TargetCostReached | TerminationReason::SolverConverged)
         );
         let iterations = res.state().get_iter();
+        let cost = res.state().get_best_cost();
 
-        (best_x.clone(), converged, iterations)
+        (best_x.clone(), converged, iterations, cost)
 
         // // Cost function value associated with best parameter vector
         // let best_cost = res.state().get_best_cost();
@@ -400,7 +404,7 @@ impl LinearSystem {
         // let function_evaluation_counts = res.state().get_func_counts();
     }
 
-    pub fn solve(&self, max_iters: u64) -> (DVector<f32>, bool, u64) {
+    pub fn solve(&self, max_iters: u64) -> (DVector<f32>, bool, u64, f32) {
         let x0 = DVector::<f32>::zeros(self.f.len());
         self.solve_with_initial_guess(x0, max_iters)
     }

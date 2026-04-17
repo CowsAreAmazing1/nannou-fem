@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 
+use egui_plot::{Line, Plot};
 use nannou_egui::color_picker::color_edit_button_rgb;
-use nannou_egui::{self, Egui, egui};
-
-use nannou_egui::egui::{Label, Response, RichText, Slider, Style, Ui, Widget};
+use nannou_egui::{Egui, egui};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MatrixColorMode {
@@ -18,7 +17,7 @@ pub struct StyledSlider<'a> {
     max: f32,
     value: &'a mut f32,
 
-    style: Option<&'a Style>,
+    style: Option<&'a egui::Style>,
 }
 
 impl<'a> StyledSlider<'a> {
@@ -33,15 +32,15 @@ impl<'a> StyledSlider<'a> {
     }
 }
 
-impl<'a> Widget for StyledSlider<'a> {
-    fn ui(self, ui: &mut Ui) -> Response {
+impl<'a> egui::Widget for StyledSlider<'a> {
+    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         let mut result = None;
 
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 let space = (ui.available_width() - 30.0, ui.available_height());
-                let text = RichText::new(&self.title).monospace();
-                ui.add_sized(space, Label::new(text));
+                let text = egui::RichText::new(&self.title).monospace();
+                ui.add_sized(space, egui::Label::new(text));
             });
 
             ui.horizontal(|ui| {
@@ -51,7 +50,7 @@ impl<'a> Widget for StyledSlider<'a> {
                 ui.style_mut().spacing.slider_width = ui.available_width() - 70.0;
 
                 let range = self.min..=self.max;
-                let slider = Slider::new(self.value, range).logarithmic(true); // .show_value(false).integer();
+                let slider = egui::Slider::new(self.value, range).logarithmic(true); // .show_value(false).integer();
                 result = Some(ui.add(slider));
             })
         });
@@ -165,7 +164,7 @@ impl UiState {
             } else {
                 egui::Color32::YELLOW
             };
-            ui.label(RichText::new(text).color(color));
+            ui.label(egui::RichText::new(text).color(color));
             let text = if let Some(num_vertices) = params.num_vertices {
                 format!("Number of vertices: {}", num_vertices)
             } else {
@@ -181,7 +180,7 @@ impl UiState {
 
             if params.solve_mode == crate::SolveMode::Iterative {
                 ui.add(
-                    egui::Slider::new(&mut params.iterative_steps_per_frame, 1..=1_000)
+                    egui::Slider::new(&mut params.iterative_steps_per_frame, 1..=10_000)
                         .logarithmic(true)
                         .text("Iterative Steps / Frame"),
                 );
@@ -193,6 +192,18 @@ impl UiState {
                     params.iterative_reset_requested = true;
                     params.iterative_total_steps = 0;
                 }
+
+                // Cost plot
+                let points: Vec<[f64; 2]> = params
+                    .iterative_cost_data
+                    .iter()
+                    .map(|&(iter, cost)| [iter as f64, (cost as f64).ln()])
+                    .collect();
+
+                let line = Line::new(points).name("Cost");
+
+                let plot = Plot::new("Cost plot").view_aspect(3.0);
+                plot.show(ui, |plot_ui| plot_ui.line(line));
             } else {
                 ui.add(
                     egui::Slider::new(&mut params.solution_steps, 1..=10_000)
@@ -200,26 +211,6 @@ impl UiState {
                         .text("Full Solve Steps"),
                 );
             }
-
-            let text = if let Some(success) = params.solution_success {
-                if success {
-                    "Solution successful!"
-                } else {
-                    "Solution failed."
-                }
-            } else {
-                "Solution not yet attempted."
-            };
-            let color = if let Some(success) = params.solution_success {
-                if success {
-                    egui::Color32::GREEN
-                } else {
-                    egui::Color32::RED
-                }
-            } else {
-                egui::Color32::YELLOW
-            };
-            ui.label(RichText::new(text).color(color));
 
             ui.checkbox(&mut params.show_contours, "Show Contours");
             ui.add(

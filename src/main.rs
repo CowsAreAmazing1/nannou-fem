@@ -103,6 +103,7 @@ struct Params {
     iterative_steps_per_frame: u64,
     iterative_total_steps: u64,
     iterative_reset_requested: bool,
+    iterative_cost_data: Vec<(u32, f32)>, // (iteration, cost)
 
     contour_steps: u32,
     show_contours: bool,
@@ -129,6 +130,7 @@ impl Default for Params {
             iterative_steps_per_frame: 100,
             iterative_total_steps: 0,
             iterative_reset_requested: false,
+            iterative_cost_data: Vec::new(),
 
             contour_steps: 12,
             show_contours: true,
@@ -373,6 +375,7 @@ fn update(app: &App, model: &mut Model, _update: Update) {
     } else if model.params.iterative_reset_requested {
         model.iterative_state = None;
         model.iterative_time_anchor = Some(app.time);
+        model.params.iterative_cost_data.clear();
     }
 
     // Build polygons
@@ -414,7 +417,7 @@ fn update(app: &App, model: &mut Model, _update: Update) {
             model.params.refinement_success = Some(refinement_success);
             model.params.num_vertices = Some(model.triangulation.vertices().count());
 
-            let (solution, solution_success, _) = ls.solve(model.params.solution_steps);
+            let (solution, solution_success, _, _) = ls.solve(model.params.solution_steps);
             model.params.solution_success = Some(solution_success);
 
             let sol = solution.as_slice().to_vec();
@@ -459,6 +462,7 @@ fn update(app: &App, model: &mut Model, _update: Update) {
                     total_iterations: 0,
                     converged: false,
                 });
+                model.params.iterative_cost_data.clear();
                 model.params.iterative_reset_requested = false;
             }
 
@@ -472,7 +476,7 @@ fn update(app: &App, model: &mut Model, _update: Update) {
             }
 
             if !state.converged {
-                let (next_solution, converged, step_iterations) =
+                let (next_solution, converged, step_iterations, cost) =
                     state.linear_system.solve_with_initial_guess(
                         state.solution.clone(),
                         model.params.iterative_steps_per_frame,
@@ -480,6 +484,10 @@ fn update(app: &App, model: &mut Model, _update: Update) {
                 state.solution = next_solution;
                 state.converged = converged;
                 state.total_iterations += step_iterations;
+                model
+                    .params
+                    .iterative_cost_data
+                    .push((state.total_iterations.try_into().unwrap(), cost));
             }
 
             model.triangulation = state.triangulation.clone();
