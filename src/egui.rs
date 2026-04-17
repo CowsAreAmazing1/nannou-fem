@@ -129,7 +129,7 @@ impl UiState {
             ui.add(StyledSlider::new(
                 "Max Allowed Area",
                 1.0,
-                10000.0,
+                100_000.0,
                 &mut params.max_allowed_area,
             ));
             ui.add(egui::Slider::new(&mut params.angle_limit, 0.0..=40.0).text("Angle Limit"));

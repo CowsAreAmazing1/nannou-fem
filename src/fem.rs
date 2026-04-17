@@ -9,31 +9,7 @@ use nannou::prelude::*;
 use spade::{ConstrainedDelaunayTriangulation, HasPosition, Triangulation};
 use sprs::{CsMat, TriMat};
 
-pub struct Body {
-    generator: Box<dyn Fn(f32) -> Vec2>,
-    density: f32,
-    resolution: usize,
-}
-
-impl Body {
-    // Builds a body from a parametric curve `generator` function that maps [0, 1] to `resolution` points on the boundary, and the shape's `density`
-    pub fn new(density: f32, resolution: usize, generator: impl Fn(f32) -> Vec2 + 'static) -> Self {
-        Self {
-            generator: Box::new(generator),
-            density,
-            resolution,
-        }
-    }
-
-    pub fn sample_boundary(&self) -> Vec<Vec2> {
-        (0..self.resolution)
-            .map(|i| {
-                let t = i as f32 / self.resolution as f32;
-                (self.generator)(t)
-            })
-            .collect()
-    }
-}
+use crate::objects::Body;
 
 /// Checks if `point` is on the line segment defined by points `a` and `b`, within a certain tolerance `eps`.
 fn point_on_segment(point: Vec2, a: Vec2, b: Vec2, eps: f32) -> bool {

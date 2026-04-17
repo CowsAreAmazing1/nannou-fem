@@ -1,3 +1,4 @@
+use fem::objects::Body;
 use nalgebra::DVector;
 use nannou::prelude::*;
 use nannou_egui::Egui;
@@ -6,7 +7,7 @@ use std::collections::HashMap;
 
 use fem::app::{Params, SolveMode, Visual};
 use fem::egui::UiState;
-use fem::fem::{Body, FemMesh, LinearSystem};
+use fem::fem::{FemMesh, LinearSystem};
 use fem::gpu::GpuState;
 
 // use crate::svg::read_svg;
