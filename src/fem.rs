@@ -6,10 +6,44 @@ use argmin::{
 };
 use nalgebra::DVector;
 use nannou::prelude::*;
-use spade::{ConstrainedDelaunayTriangulation, HasPosition, Triangulation};
+use spade::{ConstrainedDelaunayTriangulation, HasPosition, Point2, Triangulation};
 use sprs::{CsMat, TriMat};
 
-use crate::objects::Body;
+use crate::objects::ConstraintHandler;
+
+/// Allowing Nannou Vec2s to be used as vertices in a triangulation
+#[derive(Clone)]
+pub struct Vertex {
+    pos: Vec2,
+}
+
+impl Vertex {
+    pub fn vec2(&self) -> Vec2 {
+        self.pos
+    }
+}
+
+impl From<Vec2> for Vertex {
+    fn from(pos: Vec2) -> Self {
+        Self { pos }
+    }
+}
+
+impl From<Point2<f32>> for Vertex {
+    fn from(pos: Point2<f32>) -> Self {
+        Self {
+            pos: vec2(pos.x, pos.y),
+        }
+    }
+}
+
+impl HasPosition for Vertex {
+    type Scalar = f32;
+
+    fn position(&self) -> Point2<Self::Scalar> {
+        spade::Point2::new(self.pos.x, self.pos.y)
+    }
+}
 
 /// Checks if `point` is on the line segment defined by points `a` and `b`, within a certain tolerance `eps`.
 fn point_on_segment(point: Vec2, a: Vec2, b: Vec2, eps: f32) -> bool {
@@ -76,6 +110,43 @@ pub fn _point_in_any_polygon(point: Vec2, polygons: &[Vec<Vec2>]) -> bool {
     false
 }
 
+/// Sets up a constrained Delaunay triangulation, with the given vertices constrained in a closed loop, then refines. Returns the triangulation, and a boolean indicating whether the refinement finished without running out of vertices.
+pub fn setup_triangulation(
+    to_constrain: &ConstraintHandler,
+    half_width: f32,
+    half_height: f32,
+    refinement_params: Option<spade::RefinementParameters<f32>>,
+) -> (ConstrainedDelaunayTriangulation<Vertex>, bool) {
+    let verts = [
+        vec2(-half_width, -half_height),
+        vec2(half_width, -half_height),
+        vec2(half_width, half_height),
+        vec2(-half_width, half_height),
+    ];
+
+    let mut triangulation: ConstrainedDelaunayTriangulation<Vertex> =
+        ConstrainedDelaunayTriangulation::new();
+
+    for &vert in &verts {
+        triangulation.insert(Vertex::from(vert)).unwrap();
+    }
+
+    for (polygon, closed) in to_constrain.get_constraints() {
+        triangulation
+            .add_constraint_edges(polygon.iter().copied().map(Vertex::from), closed)
+            .unwrap();
+    }
+
+    let result = if let Some(params) = refinement_params {
+        triangulation.refine(params)
+    } else {
+        triangulation
+            .refine(spade::RefinementParameters::default().with_max_additional_vertices(10_000))
+    };
+
+    (triangulation, result.refinement_complete)
+}
+
 #[derive(Debug, Clone)]
 pub struct FemMesh {
     pub positions: Vec<Vec2>,
@@ -90,7 +161,7 @@ impl FemMesh {
     /// Converts a `ConstrainedDelaunayTriangulation` to a `FemMesh`, an easy-to-use format for finite element assembly and solving. The `is_boundary` field is determined by checking if each vertex lies on any of the constrained loops.
     pub fn build_mesh<V>(
         triangulation: &ConstrainedDelaunayTriangulation<V>,
-        constrained_loops: &Vec<Vec<Vec2>>,
+        constraints: &ConstraintHandler,
     ) -> FemMesh
     where
         V: HasPosition<Scalar = f32>,
@@ -111,7 +182,8 @@ impl FemMesh {
             })
             .collect::<Vec<_>>();
 
-        let max_extent = constrained_loops
+        let max_extent = constraints
+            .loops
             .iter()
             .flat_map(|loop_pts| loop_pts.iter())
             .map(|v| v.length())
@@ -121,11 +193,11 @@ impl FemMesh {
         let is_boundary = positions
             .iter()
             .map(|&p| {
-                if constrained_loops.is_empty() {
+                if constraints.loops.is_empty() {
                     return false;
                 }
 
-                for loop_pts in constrained_loops {
+                for loop_pts in &constraints.loops {
                     if loop_pts.len() < 2 {
                         continue;
                     }
@@ -154,7 +226,7 @@ impl FemMesh {
     }
 
     /// Computes element and node densities from body loops and their densities.
-    pub fn compute_density(&mut self, body_loops: &[Vec<Vec2>], bodies: &[Body]) {
+    pub fn compute_density(&mut self, constraints: &ConstraintHandler) {
         self.element_density = self
             .elements
             .iter()
@@ -164,12 +236,12 @@ impl FemMesh {
                 let p2 = self.positions[i2];
                 let centroid = (p0 + p1 + p2) / 3.0;
 
-                body_loops
+                constraints
+                    .get_dense()
                     .iter()
-                    .zip(bodies.iter().map(|b| b.density))
                     .map(|(loop_pts, density)| {
                         if point_in_or_on_polygon(centroid, loop_pts) {
-                            density
+                            *density
                         } else {
                             0.0
                         }

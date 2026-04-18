@@ -1,13 +1,13 @@
-use fem::objects::Body;
+use fem::objects::{Body, ConstraintHandler};
 use nalgebra::DVector;
 use nannou::prelude::*;
 use nannou_egui::Egui;
-use spade::{ConstrainedDelaunayTriangulation, HasPosition, Point2, Triangulation};
+use spade::{ConstrainedDelaunayTriangulation, Triangulation};
 use std::collections::HashMap;
 
 use fem::app::{Params, SolveMode, Visual};
 use fem::egui::UiState;
-use fem::fem::{FemMesh, LinearSystem};
+use fem::fem::{FemMesh, LinearSystem, Vertex, setup_triangulation};
 use fem::gpu::GpuState;
 
 // use crate::svg::read_svg;
@@ -20,34 +20,6 @@ fn main() {
         .update(update)
         .loop_mode(LoopMode::refresh_sync())
         .run();
-}
-
-/// Allowing Nannou Vec2s to be used as vertices in a triangulation
-#[derive(Clone)]
-struct Vertex {
-    pos: Vec2,
-}
-
-impl From<Vec2> for Vertex {
-    fn from(pos: Vec2) -> Self {
-        Self { pos }
-    }
-}
-
-impl From<Point2<f32>> for Vertex {
-    fn from(pos: Point2<f32>) -> Self {
-        Self {
-            pos: vec2(pos.x, pos.y),
-        }
-    }
-}
-
-impl HasPosition for Vertex {
-    type Scalar = f32;
-
-    fn position(&self) -> Point2<Self::Scalar> {
-        spade::Point2::new(self.pos.x, self.pos.y)
-    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -81,43 +53,6 @@ struct Model {
     k_matrix: Option<HashMap<(usize, usize), f32>>,
 }
 
-/// Sets up a constrained Delaunay triangulation, with the given vertices constrained in a closed loop, then refines. Returns the triangulation, and a boolean indicating whether the refinement finished without running out of vertices.
-fn setup_triangulation(
-    to_constrain: &Vec<Vec<Vec2>>,
-    half_width: f32,
-    half_height: f32,
-    refinement_params: Option<spade::RefinementParameters<f32>>,
-) -> (ConstrainedDelaunayTriangulation<Vertex>, bool) {
-    let verts = [
-        vec2(-half_width, -half_height),
-        vec2(half_width, -half_height),
-        vec2(half_width, half_height),
-        vec2(-half_width, half_height),
-    ];
-
-    let mut triangulation: ConstrainedDelaunayTriangulation<Vertex> =
-        ConstrainedDelaunayTriangulation::new();
-
-    for &vert in &verts {
-        triangulation.insert(Vertex::from(vert)).unwrap();
-    }
-
-    for polygon in to_constrain {
-        triangulation
-            .add_constraint_edges(polygon.iter().copied().map(Vertex::from), true)
-            .unwrap();
-    }
-
-    let result = if let Some(params) = refinement_params {
-        triangulation.refine(params)
-    } else {
-        triangulation
-            .refine(spade::RefinementParameters::default().with_max_additional_vertices(10_000))
-    };
-
-    (triangulation, result.refinement_complete)
-}
-
 fn model(app: &App) -> Model {
     let win = app
         .new_window()
@@ -135,25 +70,22 @@ fn model(app: &App) -> Model {
 
     let params = Params::default();
 
-    let bodies = [
-        Body::new(1.0, 100, |t| {
+    let constraints = ConstraintHandler::new()
+        .add_object(Body::new(1.0, 100, |t| {
             let angle = t * TAU;
             let rad = 200.0 * (1.0 + 0.5 * (4.0 * angle).sin());
             vec2(rad * angle.cos() - 300.0, rad * angle.sin())
-        }),
-        Body::new(1.0, 100, |t| {
+        }))
+        .add_object(Body::new(1.0, 100, |t| {
             let angle = t * TAU;
             let rad = 200.0 * (1.0 + 0.5 * (4.0 * angle).sin());
             vec2(rad * angle.cos() + 300.0, rad * angle.sin())
-        }),
-    ];
+        }));
 
-    let constrained_loops = bodies.iter().map(|b| b.sample_boundary()).collect();
+    let (triangulation, _) = setup_triangulation(&constraints, half_w, half_h, None);
 
-    let (triangulation, _) = setup_triangulation(&constrained_loops, half_w, half_h, None);
-
-    let mut fem_mesh = FemMesh::build_mesh(&triangulation, &constrained_loops);
-    fem_mesh.compute_density(&constrained_loops, &bodies);
+    let mut fem_mesh = FemMesh::build_mesh(&triangulation, &constraints);
+    fem_mesh.compute_density(&constraints);
 
     let window = app.main_window();
     let device = window.device();
@@ -248,8 +180,7 @@ fn node_acceleration_magnitude(mesh: &FemMesh, potential: &[f32]) -> Vec<f32> {
 }
 
 fn build_frame_system(
-    constrained_loops: &Vec<Vec<Vec2>>,
-    bodies: &[Body],
+    constraints: &ConstraintHandler,
     half_w: f32,
     half_h: f32,
     params: &Params,
@@ -265,10 +196,10 @@ fn build_frame_system(
         .with_angle_limit(spade::AngleLimit::from_deg(params.angle_limit));
 
     let (triangulation, refinement_success) =
-        setup_triangulation(constrained_loops, half_w, half_h, Some(refinement_params));
+        setup_triangulation(constraints, half_w, half_h, Some(refinement_params));
 
-    let mut fem_mesh = FemMesh::build_mesh(&triangulation, constrained_loops);
-    fem_mesh.compute_density(constrained_loops, bodies);
+    let mut fem_mesh = FemMesh::build_mesh(&triangulation, constraints);
+    fem_mesh.compute_density(constraints);
     fem_mesh.dirichlet_values(0.0, half_w, half_h);
     let ls = LinearSystem::from_mesh(&fem_mesh);
 
@@ -312,32 +243,29 @@ fn update(app: &App, model: &mut Model, _update: Update) {
     let angle_offset = model.params.shape_parameters[4];
     let spacing = model.params.shape_parameters[5];
 
-    let bodies = [
-        Body::new(1.0, resolution, move |t| {
+    let constraints = ConstraintHandler::new()
+        .add_object(Body::new(1.0, resolution, move |t| {
             let angle = t * TAU - angle_offset;
             let rad = radius_outer * (1.0 + radius_inner * (omega * angle).cos());
             vec2(rad * angle.cos() - spacing, rad * angle.sin())
-        }),
-        Body::new(1.0, resolution, move |t| {
+        }))
+        .add_object(Body::new(1.0, resolution, move |t| {
             let angle = t * TAU - angle_offset;
             let rad = radius_outer * (1.0 + radius_inner * (omega * angle).cos());
             vec2(rad * (angle).cos() + spacing, rad * (angle).sin())
-        }),
-        // Body::new(1.0, |t| {
-        //     vec2(200.0 * (TAU * t).cos(), 200.0 * (TAU * t).sin())
-        // }),
-        // Body::new(5.0, move |t| {
-        //     vec2(500.0 * time.sin(), 500.0 * time.cos())
-        //         + vec2(20.0 * (TAU * t).cos(), 20.0 * (TAU * t).sin())
-        // }),
-    ];
-
-    let constrained_loops = bodies.iter().map(|b| b.sample_boundary()).collect();
+        }));
+    // Body::new(1.0, |t| {
+    //     vec2(200.0 * (TAU * t).cos(), 200.0 * (TAU * t).sin())
+    // }),
+    // Body::new(5.0, move |t| {
+    //     vec2(500.0 * time.sin(), 500.0 * time.cos())
+    //         + vec2(20.0 * (TAU * t).cos(), 20.0 * (TAU * t).sin())
+    // }),
 
     let values = match model.params.solve_mode {
         SolveMode::FullPerFrame => {
             let (triangulation, fem_mesh, ls, refinement_success) =
-                build_frame_system(&constrained_loops, &bodies, half_w, half_h, &model.params);
+                build_frame_system(&constraints, half_w, half_h, &model.params);
 
             model.triangulation = triangulation;
             model.params.refinement_success = Some(refinement_success);
@@ -374,7 +302,7 @@ fn update(app: &App, model: &mut Model, _update: Update) {
 
             if needs_rebuild {
                 let (triangulation, mesh, ls, refinement_success) =
-                    build_frame_system(&constrained_loops, &bodies, half_w, half_h, &model.params);
+                    build_frame_system(&constraints, half_w, half_h, &model.params);
 
                 model.params.refinement_success = Some(refinement_success);
                 model.params.num_vertices = Some(triangulation.vertices().count());
@@ -478,13 +406,13 @@ fn view(app: &App, model: &Model, frame: Frame) {
         let draw = app.draw();
 
         // model.triangulation.vertices().for_each(|v| {
-        //     draw.ellipse().xy(v.data().pos).color(BLUE).w_h(15.0, 15.0);
+        //     draw.ellipse().xy(v.data().vec2()).color(BLUE).w_h(15.0, 15.0);
         // });
 
         for face in model.triangulation.inner_faces() {
             for edge in face.adjacent_edges() {
-                let v1 = edge.from().data().pos;
-                let v2 = edge.to().data().pos;
+                let v1 = edge.from().data().vec2();
+                let v2 = edge.to().data().vec2();
 
                 draw.line().start(v1).end(v2).color(BLACK).weight(2.0);
             }
